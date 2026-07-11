@@ -2,7 +2,7 @@
 
 use crate::{Directive, Keyword, LegacyLanguageElement, Symbol};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TextRange {
     pub start: u32,
     pub end: u32,
@@ -140,7 +140,10 @@ impl Lexer<'_> {
             if first == '"' {
                 self.offset += first.len_utf8();
                 while self.offset < self.text.len() {
-                    let character = self.text[self.offset..].chars().next().expect("source remains");
+                    let character = self.text[self.offset..]
+                        .chars()
+                        .next()
+                        .expect("source remains");
                     self.offset += character.len_utf8();
                     if character == '"' {
                         break;
@@ -415,9 +418,11 @@ mod tests {
     fn include_paths_are_single_lossless_tokens() {
         let result = lex("#include \"shared/functions.stan\"\n");
         assert!(result.diagnostics.is_empty());
-        assert!(result
-            .tokens
-            .iter()
-            .any(|token| token.kind == SyntaxKind::IncludePath));
+        assert!(
+            result
+                .tokens
+                .iter()
+                .any(|token| token.kind == SyntaxKind::IncludePath)
+        );
     }
 }

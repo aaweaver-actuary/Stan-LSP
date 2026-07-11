@@ -13,7 +13,7 @@ mod syntax;
 mod types;
 
 pub use catalog::{CatalogError, CatalogErrorKind, FunctionCatalog, FunctionMetadata};
-pub use format::{FormatError, FormatterConfig, format};
+pub use format::{FormatError, FormatterConfig, format, format_range};
 pub use functions::{
     CallContext, CallContextSet, Distribution, DistributionKind, FunctionCategory, Lifecycle,
     ParseStanVersionError, StanFunction, StanVersion,
@@ -24,7 +24,8 @@ pub use lexer::{
 pub use lint::{
     ALL_LINTS, ARGUMENT_COUNT, ARGUMENT_TYPE, DEPRECATED_LANGUAGE_ELEMENT, ILLEGAL_CALL_CONTEXT,
     LintConfig, LintDescriptor, LintGroup, LintLevel, PARAMETER_WITHOUT_PRIOR, REGISTRY,
-    UNRESOLVED_IDENTIFIER, UNUSED_DECLARATION, lint,
+    REPEATED_EXPENSIVE_OPERATION, UNKNOWN_DISTRIBUTION, UNRESOLVED_IDENTIFIER, UNUSED_DECLARATION,
+    VECTORIZATION_OPPORTUNITY, lint,
 };
 pub use parser::{
     ParseResult, ProgramBlock, SourceFile, SyntaxNode, SyntaxNodeKind, SyntaxTree, parse,
@@ -46,6 +47,7 @@ pub use types::{
 pub const STAN_VERSION: StanVersion = StanVersion::new(2, 39, 0);
 pub use analysis::{
     Analysis, AnalysisHost, AnalysisSnapshot, FileId, Revision, analyze, analyze_revision,
+    fallback_analysis,
 };
 pub use diagnostic::{
     Applicability, Diagnostic, DiagnosticCode, DiagnosticSource, Fix, RelatedDiagnostic, Severity,

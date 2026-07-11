@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use stan_language::{AnalysisSnapshot, Revision, analyze_revision};
+use stan_language::{AnalysisSnapshot, Revision, analyze_revision, fallback_analysis};
 use std::sync::Arc;
 use tower_lsp_server::ls_types::Uri;
 
@@ -18,7 +18,16 @@ pub struct Document {
 impl Document {
     pub fn new(uri: Uri, version: i32, text: String) -> Self {
         let line_index = LineIndex::new(&text);
-        let analysis = Arc::new(analyze_revision(&text, Revision(version as u64)));
+        let revision = Revision(version.max(0) as u64);
+        let analysis = Arc::new(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                analyze_revision(&text, revision)
+            }))
+            .unwrap_or_else(|_| {
+                tracing::error!(uri = %uri.as_str(), version, "Stan analysis panicked");
+                fallback_analysis(&text, revision, "internal analysis failure")
+            }),
+        );
         Self {
             uri,
             version,

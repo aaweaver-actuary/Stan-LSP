@@ -30,7 +30,9 @@ async function start() {
         includePaths: config.get('includePaths', []),
         compilerOnSave: config.get('compilerOnSave', true),
         compilerOnChange: config.get('compilerOnChange', false),
-        compilerDebounceMs: config.get('compilerDebounceMs', 500)
+        compilerDebounceMs: config.get('compilerDebounceMs', 500),
+        formatIndentWidth: config.get('formatIndentWidth', 2),
+        lintLevels: config.get('lintLevels', {})
       }
     }
   );

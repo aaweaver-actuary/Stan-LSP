@@ -69,16 +69,7 @@ impl StancRunner {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         let message = if stderr.is_empty() { stdout } else { stderr };
-        let primary_range = diagnostic_range(&message, &source);
-        Ok(vec![Diagnostic {
-            code: DiagnosticCode("stanc3.compiler"),
-            severity: Severity::Error,
-            message,
-            primary_range,
-            related: Vec::new(),
-            fixes: Vec::new(),
-            source: DiagnosticSource::Stanc3,
-        }])
+        Ok(parse_stanc_diagnostics(&message, &source))
     }
 
     pub async fn check_source(
@@ -179,6 +170,45 @@ fn diagnostic_range(message: &str, source: &str) -> TextRange {
     TextRange::new(start, end)
 }
 
+fn parse_stanc_diagnostics(message: &str, source: &str) -> Vec<Diagnostic> {
+    let blocks = message
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|block| !block.is_empty())
+        .collect::<Vec<_>>();
+    let blocks = if blocks.is_empty() {
+        vec![message]
+    } else {
+        blocks
+    };
+    blocks
+        .into_iter()
+        .map(|block| {
+            let warning = block
+                .lines()
+                .next()
+                .is_some_and(|line| line.to_ascii_lowercase().contains("warning"));
+            Diagnostic {
+                code: DiagnosticCode(if warning {
+                    "stanc3.warning"
+                } else {
+                    "stanc3.compiler"
+                }),
+                severity: if warning {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                },
+                message: block.to_owned(),
+                primary_range: diagnostic_range(block, source),
+                related: Vec::new(),
+                fixes: Vec::new(),
+                source: DiagnosticSource::Stanc3,
+            }
+        })
+        .collect()
+}
+
 fn number_after(text: &str, marker: &str) -> Option<usize> {
     let rest = text.split_once(marker)?.1;
     rest.chars()
@@ -207,5 +237,15 @@ mod tests {
         let source = "data {\n  real θ;\n}\n";
         let range = diagnostic_range("Syntax error, line 2, column 8", source);
         assert_eq!(&source[range.start as usize..range.end as usize], "θ");
+    }
+
+    #[test]
+    fn multiple_compiler_messages_remain_separate() {
+        let diagnostics = parse_stanc_diagnostics(
+            "Syntax error, line 1, column 1\n\nWarning, line 2, column 1",
+            "x\ny\n",
+        );
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[1].severity, Severity::Warning);
     }
 }

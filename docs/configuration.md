@@ -11,6 +11,8 @@ settings:
 | `compilerOnSave` | `true` | Run authoritative stanc validation on save. |
 | `compilerOnChange` | `false` | Run stanc after debounced document changes. |
 | `compilerDebounceMs` | `500` | Delay before change-triggered compiler validation. |
+| `formatIndentWidth` | `2` | Native formatter indentation width. |
+| `lintLevels` | `{}` | Per-rule `allow`, `hint`, `warn`, or `deny` overrides. |
 
 `stanfmt` reads `stanfmt.toml` from its working directory. The currently stable
 option is `indent_width = 2`.

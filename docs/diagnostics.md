@@ -21,10 +21,14 @@ lint rules use their lint ID.
 | `correctness.illegal-call-context` | error | A restricted function is called in an illegal block. |
 | `correctness.argument-count` | error | No known overload accepts the argument count. |
 | `correctness.argument-type` | error | Known argument types match no overload. |
+| `correctness.unknown-distribution` | error | Sampling notation names no cataloged distribution. |
 | `suspicious.unused-declaration` | warning | A declaration has no references. |
+| `performance.repeated-expensive-operation` | warning | Expensive matrix work is repeated inside a loop. |
+| `performance.vectorization-opportunity` | hint | A sampling loop may admit vectorization. |
 | `bayesian.parameter-without-apparent-prior` | allow | Opt-in heuristic for parameters without an apparent prior contribution. |
 | `stanc3.compiler` | error | Authoritative diagnostic emitted by stanc3. |
 | `stanc3.version-mismatch` | information | Embedded catalog and compiler versions differ. |
+| `internal.analysis-panic` | error | Analysis was isolated after an internal failure; please report the model and logs. |
 
 Bayesian heuristic lints will remain disabled by default until their precision
 has been established on representative projects.

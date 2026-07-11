@@ -69,6 +69,24 @@ pub const ARGUMENT_TYPE: LintDescriptor = LintDescriptor {
     default_level: LintLevel::Deny,
     description: "call arguments match no known overload when their types are known",
 };
+pub const UNKNOWN_DISTRIBUTION: LintDescriptor = LintDescriptor {
+    id: "correctness.unknown-distribution",
+    group: LintGroup::Correctness,
+    default_level: LintLevel::Deny,
+    description: "sampling statement names no known distribution",
+};
+pub const REPEATED_EXPENSIVE_OPERATION: LintDescriptor = LintDescriptor {
+    id: "performance.repeated-expensive-operation",
+    group: LintGroup::Performance,
+    default_level: LintLevel::Warn,
+    description: "expensive matrix operation is repeated inside a loop",
+};
+pub const VECTORIZATION_OPPORTUNITY: LintDescriptor = LintDescriptor {
+    id: "performance.vectorization-opportunity",
+    group: LintGroup::Performance,
+    default_level: LintLevel::Hint,
+    description: "sampling loop may admit a vectorized form",
+};
 pub const PARAMETER_WITHOUT_PRIOR: LintDescriptor = LintDescriptor {
     id: "bayesian.parameter-without-apparent-prior",
     group: LintGroup::Bayesian,
@@ -83,6 +101,9 @@ pub const ALL_LINTS: &[LintDescriptor] = &[
     ILLEGAL_CALL_CONTEXT,
     ARGUMENT_COUNT,
     ARGUMENT_TYPE,
+    UNKNOWN_DISTRIBUTION,
+    REPEATED_EXPENSIVE_OPERATION,
+    VECTORIZATION_OPPORTUNITY,
     PARAMETER_WITHOUT_PRIOR,
 ];
 pub const REGISTRY: &[LintDescriptor] = ALL_LINTS;
@@ -102,6 +123,15 @@ impl LintConfig {
             .get(descriptor.id)
             .copied()
             .unwrap_or(descriptor.default_level)
+    }
+
+    pub fn set_named(&mut self, id: &str, level: LintLevel) -> Result<(), String> {
+        let descriptor = ALL_LINTS
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or_else(|| format!("unknown lint `{id}`"))?;
+        self.set(descriptor.id, level);
+        Ok(())
     }
 
     pub fn from_toml(input: &str) -> Result<Self, String> {
@@ -140,6 +170,8 @@ pub fn lint(snapshot: &AnalysisSnapshot, config: &LintConfig) -> Vec<Diagnostic>
     emit_illegal_context(snapshot, config, &mut diagnostics);
     emit_argument_count(snapshot, config, &mut diagnostics);
     emit_argument_type(snapshot, config, &mut diagnostics);
+    emit_unknown_distribution(snapshot, config, &mut diagnostics);
+    emit_performance(snapshot, config, &mut diagnostics);
     emit_missing_prior(snapshot, config, &mut diagnostics);
     apply_suppressions(snapshot, &mut diagnostics);
     diagnostics
@@ -551,6 +583,112 @@ fn type_compatible(argument: &crate::StanType, parameter: &crate::StanType) -> b
         )
 }
 
+fn emit_unknown_distribution(
+    snapshot: &AnalysisSnapshot,
+    config: &LintConfig,
+    output: &mut Vec<Diagnostic>,
+) {
+    let level = config.level(UNKNOWN_DISTRIBUTION);
+    if level == LintLevel::Allow {
+        return;
+    }
+    for node in snapshot
+        .syntax
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == SyntaxNodeKind::SamplingStatement)
+    {
+        let tokens = &snapshot.tokens[node.token_range.clone()];
+        let distribution = tokens
+            .iter()
+            .skip_while(|token| token.kind != SyntaxKind::Symbol(crate::Symbol::Tilde))
+            .skip(1)
+            .find(|token| {
+                !matches!(
+                    token.kind,
+                    SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment
+                )
+            });
+        let Some(token) = distribution.filter(|token| token.kind == SyntaxKind::Identifier) else {
+            continue;
+        };
+        let name = &snapshot.syntax.text()[token.range.start as usize..token.range.end as usize];
+        if crate::Distribution::from_str(name).is_err() {
+            output.push(Diagnostic {
+                code: crate::DiagnosticCode(UNKNOWN_DISTRIBUTION.id),
+                severity: severity(level),
+                message: format!("unknown distribution `{name}`"),
+                primary_range: token.range,
+                related: Vec::new(),
+                fixes: Vec::new(),
+                source: DiagnosticSource::StanLint,
+            });
+        }
+    }
+}
+
+fn emit_performance(
+    snapshot: &AnalysisSnapshot,
+    config: &LintConfig,
+    output: &mut Vec<Diagnostic>,
+) {
+    let expensive_level = config.level(REPEATED_EXPENSIVE_OPERATION);
+    let vector_level = config.level(VECTORIZATION_OPPORTUNITY);
+    let text = snapshot.syntax.text();
+    for loop_node in snapshot
+        .syntax
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == SyntaxNodeKind::ForStatement)
+    {
+        if expensive_level != LintLevel::Allow {
+            for call in snapshot.syntax.nodes().iter().filter(|node| {
+                node.kind == SyntaxNodeKind::FunctionCall
+                    && loop_node.range.start <= node.range.start
+                    && node.range.end <= loop_node.range.end
+            }) {
+                let token = &snapshot.tokens[call.token_range.start];
+                let name = &text[token.range.start as usize..token.range.end as usize];
+                if matches!(
+                    name,
+                    "inverse"
+                        | "determinant"
+                        | "log_determinant"
+                        | "cholesky_decompose"
+                        | "eigendecompose"
+                ) {
+                    output.push(Diagnostic {
+                        code: crate::DiagnosticCode(REPEATED_EXPENSIVE_OPERATION.id),
+                        severity: severity(expensive_level),
+                        message: format!("`{name}` is recomputed inside a loop"),
+                        primary_range: call.range,
+                        related: Vec::new(),
+                        fixes: Vec::new(),
+                        source: DiagnosticSource::StanLint,
+                    });
+                }
+            }
+        }
+        if vector_level != LintLevel::Allow
+            && snapshot.syntax.nodes().iter().any(|node| {
+                node.kind == SyntaxNodeKind::SamplingStatement
+                    && loop_node.range.start <= node.range.start
+                    && node.range.end <= loop_node.range.end
+            })
+        {
+            output.push(Diagnostic {
+                code: crate::DiagnosticCode(VECTORIZATION_OPPORTUNITY.id),
+                severity: severity(vector_level),
+                message: "sampling statement in a loop may be vectorizable".to_owned(),
+                primary_range: loop_node.range,
+                related: Vec::new(),
+                fixes: Vec::new(),
+                source: DiagnosticSource::StanLint,
+            });
+        }
+    }
+}
+
 fn context_at(snapshot: &AnalysisSnapshot, offset: u32) -> Option<CallContext> {
     snapshot
         .syntax
@@ -669,6 +807,23 @@ mod tests {
             lint(&snapshot, &LintConfig::default())
                 .iter()
                 .any(|diagnostic| diagnostic.code.0 == ARGUMENT_TYPE.id)
+        );
+    }
+
+    #[test]
+    fn unknown_distributions_and_loop_costs_are_reported() {
+        let unknown = analyze("model { real y; y ~ not_a_distribution(1); }");
+        assert!(
+            lint(&unknown, &LintConfig::default())
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == UNKNOWN_DISTRIBUTION.id)
+        );
+
+        let looped = analyze("model { matrix[2,2] m; for (n in 1:2) { m = inverse(m); } }");
+        assert!(
+            lint(&looped, &LintConfig::default())
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == REPEATED_EXPENSIVE_OPERATION.id)
         );
     }
 }

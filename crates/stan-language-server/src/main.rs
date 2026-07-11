@@ -1,6 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use stan_language_server::diagnostics::diagnostics;
 use stan_language_server::document::{Document, DocumentStore};
 use stan_language_server::features;
 use stan_language_server::stanc::StancRunner;
@@ -13,16 +18,17 @@ use tower_lsp_server::jsonrpc::{Error, Result};
 use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
-    CallHierarchyServerCapability, CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
-    CompletionParams, CompletionResponse, DidChangeConfigurationParams,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentHighlight,
-    DocumentHighlightParams, DocumentRangeFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeParams, FoldingRangeProviderCapability,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InlayHint, InlayHintParams, InitializeParams, InitializeResult, Location, OneOf, PositionEncodingKind, ReferenceParams,
-    RenameParams, SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    CallHierarchyServerCapability, CodeActionParams, CodeActionProviderCapability,
+    CodeActionResponse, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentHighlight, DocumentHighlightParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
+    FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
+    InlayHintParams, Location, OneOf, PositionEncodingKind, ReferenceParams, RenameParams,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, SymbolInformation, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
@@ -41,6 +47,14 @@ struct Backend {
     workspace: Arc<RwLock<Workspace>>,
     compiler_tasks: Arc<Mutex<HashMap<tower_lsp_server::ls_types::Uri, JoinHandle<()>>>>,
     compiler_version: Arc<RwLock<Option<String>>>,
+    metrics: Arc<Metrics>,
+}
+
+#[derive(Debug, Default)]
+struct Metrics {
+    analysis_runs: AtomicU64,
+    compiler_runs: AtomicU64,
+    compiler_cancellations: AtomicU64,
 }
 
 impl Backend {
@@ -53,13 +67,18 @@ impl Backend {
             workspace: Arc::new(RwLock::new(Workspace::default())),
             compiler_tasks: Arc::new(Mutex::new(HashMap::new())),
             compiler_version: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(Metrics::default()),
         }
     }
 
     async fn publish(&self, document: &Document) {
-        let mut published = diagnostics(document);
+        self.metrics.analysis_runs.fetch_add(1, Ordering::Relaxed);
+        let config = self.config.read().await.clone();
+        let mut published = stan_language_server::diagnostics::diagnostics_with_lints(
+            document,
+            &config.lint_config(),
+        );
         if let Some(path) = document.uri.to_file_path() {
-            let config = self.config.read().await.clone();
             let workspace = self.workspace.read().await;
             let (_, mut include_diagnostics) =
                 workspace.resolve_includes(&path, &document.text, &config);
@@ -86,11 +105,7 @@ impl Backend {
             }));
         }
         self.client
-            .publish_diagnostics(
-                document.uri.clone(),
-                published,
-                Some(document.version),
-            )
+            .publish_diagnostics(document.uri.clone(), published, Some(document.version))
             .await;
     }
 
@@ -114,9 +129,12 @@ impl Backend {
         let source = document.text.clone();
         let documents = self.documents.clone();
         let client = self.client.clone();
+        let metrics = self.metrics.clone();
+        let lint_config = config.lint_config();
         let debounce = config.compiler_debounce();
         let task = tokio::spawn(async move {
             tokio::time::sleep(debounce).await;
+            metrics.compiler_runs.fetch_add(1, Ordering::Relaxed);
             let Ok(compiler_diagnostics) = runner.check_source(&path, &source).await else {
                 return;
             };
@@ -124,16 +142,20 @@ impl Backend {
             let Some(current) = current.filter(|current| current.version == version) else {
                 return;
             };
-            let mut diagnostics = stan_language_server::diagnostics::diagnostics(&current);
-            diagnostics.extend(compiler_diagnostics.into_iter().filter_map(|diagnostic| {
-                stan_language_server::diagnostics::to_lsp(&current, diagnostic)
-            }));
+            let diagnostics = stan_language_server::diagnostics::with_compiler_and_lints(
+                &current,
+                compiler_diagnostics,
+                &lint_config,
+            );
             client
                 .publish_diagnostics(uri, diagnostics, Some(version))
                 .await;
         });
         if let Some(previous) = self.compiler_tasks.lock().await.insert(document.uri, task) {
             previous.abort();
+            self.metrics
+                .compiler_cancellations
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -182,7 +204,7 @@ impl LanguageServer for Backend {
             *self.stanc.write().await = Some(StancRunner::with_path(path));
         }
         self.workspace.write().await.set_roots(roots, &config);
-        *self.config.write().await = config;
+        *self.config.write().await = config.clone();
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 position_encoding: Some(PositionEncodingKind::UTF16),
@@ -236,6 +258,12 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                experimental: Some(serde_json::json!({
+                    "stanCatalogVersion": config.stan_version,
+                    "nativeFormatter": true,
+                    "stanlint": true,
+                    "stancIntegration": self.stanc.read().await.is_some()
+                })),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -247,6 +275,12 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        tracing::info!(
+            analysis_runs = self.metrics.analysis_runs.load(Ordering::Relaxed),
+            compiler_runs = self.metrics.compiler_runs.load(Ordering::Relaxed),
+            compiler_cancellations = self.metrics.compiler_cancellations.load(Ordering::Relaxed),
+            "Stan LSP session metrics"
+        );
         Ok(())
     }
 
@@ -302,6 +336,9 @@ impl LanguageServer for Backend {
         self.documents.write().await.close(&uri);
         if let Some(task) = self.compiler_tasks.lock().await.remove(&uri) {
             task.abort();
+            self.metrics
+                .compiler_cancellations
+                .fetch_add(1, Ordering::Relaxed);
         }
         if let Some(path) = uri.to_file_path() {
             let config = self.config.read().await.clone();
@@ -314,6 +351,9 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         if let Some(task) = self.compiler_tasks.lock().await.remove(&uri) {
             task.abort();
+            self.metrics
+                .compiler_cancellations
+                .fetch_add(1, Ordering::Relaxed);
         }
         if !self.config.read().await.compiler_on_save {
             return;
@@ -327,6 +367,7 @@ impl LanguageServer for Backend {
         let Some(path) = uri.to_file_path() else {
             return;
         };
+        self.metrics.compiler_runs.fetch_add(1, Ordering::Relaxed);
         let compiler_version = if let Some(version) = self.compiler_version.read().await.clone() {
             Some(version)
         } else {
@@ -367,10 +408,11 @@ impl LanguageServer for Backend {
                 if current.version != document.version {
                     return;
                 }
-                let mut diagnostics = stan_language_server::diagnostics::diagnostics(&current);
-                diagnostics.extend(compiler_diagnostics.into_iter().filter_map(|diagnostic| {
-                    stan_language_server::diagnostics::to_lsp(&current, diagnostic)
-                }));
+                let diagnostics = stan_language_server::diagnostics::with_compiler_and_lints(
+                    &current,
+                    compiler_diagnostics,
+                    &self.config.read().await.lint_config(),
+                );
                 self.client
                     .publish_diagnostics(uri, diagnostics, Some(current.version))
                     .await;
@@ -445,22 +487,26 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        Ok(self
-            .document(&params.text_document.uri)
-            .await
-            .as_ref()
-            .and_then(features::formatting))
+        let Some(document) = self.document(&params.text_document.uri).await else {
+            return Ok(None);
+        };
+        let config = self.config.read().await.formatter_config();
+        Ok(features::formatting_with_config(&document, &config))
     }
 
     async fn range_formatting(
         &self,
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
-        Ok(self
-            .document(&params.text_document.uri)
-            .await
-            .as_ref()
-            .and_then(features::formatting))
+        let Some(document) = self.document(&params.text_document.uri).await else {
+            return Ok(None);
+        };
+        let config = self.config.read().await.formatter_config();
+        Ok(features::range_formatting_with_config(
+            &document,
+            params.range,
+            &config,
+        ))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -564,7 +610,12 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        Ok(Some(features::code_actions(&document, params.range)))
+        let config = self.config.read().await.lint_config();
+        Ok(Some(features::code_actions_with_config(
+            &document,
+            params.range,
+            &config,
+        )))
     }
 
     async fn symbol(

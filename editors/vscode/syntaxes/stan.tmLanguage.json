@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Stan",
+  "scopeName": "source.stan",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.stan", "begin": "//", "end": "$" },
+        { "name": "comment.block.stan", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.stan", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.stan", "match": "\\\\." }] }
+      ]
+    },
+    "numbers": {
+      "patterns": [{ "name": "constant.numeric.stan", "match": "\\b(?:[0-9][0-9_]*(?:\\.[0-9_]*)?|\\.[0-9_]+)(?:[eE][+-]?[0-9_]+)?i?\\b" }]
+    },
+    "keywords": {
+      "patterns": [{ "name": "keyword.control.stan", "match": "\\b(?:functions|data|transformed|parameters|model|generated|quantities|return|if|else|while|for|in|break|continue)\\b" }]
+    },
+    "types": {
+      "patterns": [{ "name": "storage.type.stan", "match": "\\b(?:void|int|real|complex|vector|row_vector|matrix|array|tuple|simplex|ordered|unit_vector|corr_matrix|cov_matrix)\\b" }]
+    }
+  }
+}

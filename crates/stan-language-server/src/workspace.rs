@@ -19,6 +19,8 @@ pub struct ServerConfig {
     pub compiler_debounce_ms: u64,
     pub compiler_on_save: bool,
     pub compiler_on_change: bool,
+    pub format_indent_width: usize,
+    pub lint_levels: BTreeMap<String, String>,
 }
 
 impl Default for ServerConfig {
@@ -30,6 +32,8 @@ impl Default for ServerConfig {
             compiler_debounce_ms: 500,
             compiler_on_save: true,
             compiler_on_change: false,
+            format_indent_width: 2,
+            lint_levels: BTreeMap::new(),
         }
     }
 }
@@ -37,6 +41,27 @@ impl Default for ServerConfig {
 impl ServerConfig {
     pub fn compiler_debounce(&self) -> Duration {
         Duration::from_millis(self.compiler_debounce_ms)
+    }
+
+    pub fn formatter_config(&self) -> stan_language::FormatterConfig {
+        stan_language::FormatterConfig {
+            indent_width: self.format_indent_width.clamp(1, 16),
+        }
+    }
+
+    pub fn lint_config(&self) -> stan_language::LintConfig {
+        let mut config = stan_language::LintConfig::default();
+        for (id, level) in &self.lint_levels {
+            let level = match level.as_str() {
+                "allow" => stan_language::LintLevel::Allow,
+                "hint" => stan_language::LintLevel::Hint,
+                "warn" => stan_language::LintLevel::Warn,
+                "deny" => stan_language::LintLevel::Deny,
+                _ => continue,
+            };
+            let _ = config.set_named(id, level);
+        }
+        config
     }
 }
 
@@ -56,7 +81,10 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn set_roots(&mut self, roots: Vec<PathBuf>, config: &ServerConfig) {
-        self.roots = roots;
+        self.roots = roots
+            .into_iter()
+            .map(|root| root.canonicalize().unwrap_or(root))
+            .collect();
         self.reindex(config);
     }
 
@@ -228,10 +256,8 @@ mod tests {
 
     #[test]
     fn indexes_stan_files_and_detects_include_cycles() {
-        let root = std::env::temp_dir().join(format!(
-            "stan-lsp-workspace-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("stan-lsp-workspace-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("a.stan"), "#include b.stan\n").unwrap();

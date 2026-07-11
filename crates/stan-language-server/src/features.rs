@@ -5,12 +5,13 @@ use stan_language::{
     SyntaxKind,
 };
 use tower_lsp_server::ls_types::{
-    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionResponse, CompletionItem,
-    CompletionItemKind, CompletionResponse, DocumentHighlight, DocumentHighlightKind,
-    DocumentSymbol, DocumentSymbolResponse, FoldingRange, FoldingRangeKind, GotoDefinitionResponse,
-    Hover, HoverContents, InlayHint, InlayHintKind, InlayHintLabel, Location, MarkupContent, MarkupKind, Range, SemanticToken,
-    SemanticTokens, SemanticTokensResult, SignatureHelp, SignatureInformation, SymbolKind,
-    TextEdit, WorkspaceEdit,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeAction,
+    CodeActionKind, CodeActionOrCommand, CodeActionResponse, CompletionItem, CompletionItemKind,
+    CompletionResponse, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
+    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, GotoDefinitionResponse, Hover,
+    HoverContents, InlayHint, InlayHintKind, InlayHintLabel, Location, MarkupContent, MarkupKind,
+    Range, SemanticToken, SemanticTokens, SemanticTokensResult, SignatureHelp,
+    SignatureInformation, SymbolKind, TextEdit, WorkspaceEdit,
 };
 
 use crate::document::Document;
@@ -36,33 +37,46 @@ pub fn document_symbols(document: &Document) -> DocumentSymbolResponse {
             })
         })
         .collect::<Vec<_>>();
-    symbols.extend(document.analysis.semantics.symbols.iter().filter_map(|symbol| {
-        let range = to_range(document, symbol.declaration)?;
-        let selection_range = to_range(document, symbol.name_range)?;
-        #[allow(deprecated)]
-        Some(DocumentSymbol {
-            name: symbol.name.clone(),
-            detail: symbol.declared_type.as_ref().map(|kind| format!("{kind:?}")),
-            kind: match symbol.kind {
-                stan_language::SemanticSymbolKind::Function => SymbolKind::FUNCTION,
-                _ => SymbolKind::VARIABLE,
-            },
-            tags: None,
-            deprecated: None,
-            range,
-            selection_range,
-            children: None,
-        })
-    }));
+    symbols.extend(
+        document
+            .analysis
+            .semantics
+            .symbols
+            .iter()
+            .filter_map(|symbol| {
+                let range = to_range(document, symbol.declaration)?;
+                let selection_range = to_range(document, symbol.name_range)?;
+                #[allow(deprecated)]
+                Some(DocumentSymbol {
+                    name: symbol.name.clone(),
+                    detail: symbol
+                        .declared_type
+                        .as_ref()
+                        .map(|kind| format!("{kind:?}")),
+                    kind: match symbol.kind {
+                        stan_language::SemanticSymbolKind::Function => SymbolKind::FUNCTION,
+                        _ => SymbolKind::VARIABLE,
+                    },
+                    tags: None,
+                    deprecated: None,
+                    range,
+                    selection_range,
+                    children: None,
+                })
+            }),
+    );
     DocumentSymbolResponse::Nested(symbols)
 }
 
 pub fn formatting(document: &Document) -> Option<Vec<TextEdit>> {
-    let formatted = stan_language::format(
-        &document.analysis,
-        &stan_language::FormatterConfig::default(),
-    )
-    .ok()?;
+    formatting_with_config(document, &stan_language::FormatterConfig::default())
+}
+
+pub fn formatting_with_config(
+    document: &Document,
+    config: &stan_language::FormatterConfig,
+) -> Option<Vec<TextEdit>> {
+    let formatted = stan_language::format(&document.analysis, config).ok()?;
     if formatted == document.text {
         return Some(Vec::new());
     }
@@ -71,6 +85,39 @@ pub fn formatting(document: &Document) -> Option<Vec<TextEdit>> {
         stan_language::TextRange::new(0, document.text.len()),
     )?;
     Some(vec![TextEdit::new(range, formatted)])
+}
+
+pub fn range_formatting(document: &Document, requested: Range) -> Option<Vec<TextEdit>> {
+    range_formatting_with_config(
+        document,
+        requested,
+        &stan_language::FormatterConfig::default(),
+    )
+}
+
+pub fn range_formatting_with_config(
+    document: &Document,
+    requested: Range,
+    config: &stan_language::FormatterConfig,
+) -> Option<Vec<TextEdit>> {
+    let start = document
+        .line_index
+        .position_to_offset(&document.text, requested.start)
+        .ok()?;
+    let end = document
+        .line_index
+        .position_to_offset(&document.text, requested.end)
+        .ok()?;
+    let edit = stan_language::format_range(
+        &document.analysis,
+        config,
+        stan_language::TextRange::new(start, end),
+    )
+    .ok()?;
+    Some(vec![TextEdit::new(
+        to_range(document, edit.range)?,
+        edit.replacement,
+    )])
 }
 
 pub fn completion(document: &Document, offset: usize) -> CompletionResponse {
@@ -204,15 +251,20 @@ pub fn rename(document: &Document, offset: usize, new_name: &str) -> Option<Work
 }
 
 pub fn code_actions(document: &Document, requested: Range) -> CodeActionResponse {
+    code_actions_with_config(document, requested, &stan_language::LintConfig::default())
+}
+
+pub fn code_actions_with_config(
+    document: &Document,
+    requested: Range,
+    config: &stan_language::LintConfig,
+) -> CodeActionResponse {
     document
         .analysis
         .diagnostics
         .iter()
         .cloned()
-        .chain(stan_language::lint(
-            &document.analysis,
-            &stan_language::LintConfig::default(),
-        ))
+        .chain(stan_language::lint(&document.analysis, config))
         .filter(|diagnostic| {
             to_range(document, diagnostic.primary_range)
                 .is_some_and(|range| overlaps(range, requested))
@@ -244,7 +296,10 @@ pub fn code_actions(document: &Document, requested: Range) -> CodeActionResponse
         .collect()
 }
 
-pub fn prepare_call_hierarchy(document: &Document, offset: usize) -> Option<Vec<CallHierarchyItem>> {
+pub fn prepare_call_hierarchy(
+    document: &Document,
+    offset: usize,
+) -> Option<Vec<CallHierarchyItem>> {
     let symbol = symbol_at(document, offset)?;
     (symbol.kind == stan_language::SemanticSymbolKind::Function)
         .then(|| hierarchy_item(document, symbol))
@@ -269,10 +324,14 @@ pub fn inlay_hints(document: &Document, requested: Range) -> Vec<InlayHint> {
         let Ok(function) = StanFunction::from_str(name) else {
             continue;
         };
-        let Some(parameters) = function.signatures().iter().find_map(|signature| match signature {
-            FunctionSignature::Concrete(signature) => Some(&signature.parameters),
-            FunctionSignature::Variadic(_) => None,
-        }) else {
+        let Some(parameters) = function
+            .signatures()
+            .iter()
+            .find_map(|signature| match signature {
+                FunctionSignature::Concrete(signature) => Some(&signature.parameters),
+                FunctionSignature::Variadic(_) => None,
+            })
+        else {
             continue;
         };
         let starts = argument_starts(&document.analysis.tokens[node.token_range.clone()]);
@@ -443,7 +502,10 @@ fn hierarchy_item(
         name: symbol.name.clone(),
         kind: SymbolKind::FUNCTION,
         tags: None,
-        detail: symbol.declared_type.as_ref().map(|kind| format!("{kind:?}")),
+        detail: symbol
+            .declared_type
+            .as_ref()
+            .map(|kind| format!("{kind:?}")),
         uri: document.uri.clone(),
         range: to_range(document, symbol.declaration)?,
         selection_range: to_range(document, symbol.name_range)?,
@@ -529,20 +591,7 @@ pub fn signature_help(document: &Document, offset: usize) -> Option<SignatureHel
 }
 
 fn signature_label(function: StanFunction, signature: &FunctionSignature) -> String {
-    match signature {
-        FunctionSignature::Variadic(signature) => signature.display.clone(),
-        FunctionSignature::Concrete(signature) => format!(
-            "{}({}) => {:?}",
-            function.as_str(),
-            signature
-                .parameters
-                .iter()
-                .map(|parameter| format!("{:?}", parameter.r#type).to_lowercase())
-                .collect::<Vec<_>>()
-                .join(", "),
-            signature.return_type
-        ),
-    }
+    signature.display(function.as_str())
 }
 
 pub fn folding_ranges(document: &Document) -> Vec<FoldingRange> {
@@ -649,7 +698,7 @@ pub fn hover(document: &Document, offset: usize) -> Option<Hover> {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value: format!(
-                    "```stan\n{name}(...)\n```\n\n**{:?} distribution**",
+                    "```stan\n{name}(...)\n```\n\n**{:?} distribution**\n\n[Stan functions reference](https://mc-stan.org/docs/functions-reference/)",
                     distribution.kind()
                 ),
             }),
@@ -675,7 +724,7 @@ pub fn hover(document: &Document, offset: usize) -> Option<Hover> {
         ),
     };
     let value = format!(
-        "```stan\n{name}(...)\n```\n\n**{} overloads** · {categories} · {lifecycle}",
+        "```stan\n{name}(...)\n```\n\n**{} overloads** · {categories} · {lifecycle}\n\n[Stan functions reference](https://mc-stan.org/docs/functions-reference/)",
         function.signatures().len()
     );
     Some(Hover {

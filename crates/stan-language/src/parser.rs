@@ -19,6 +19,7 @@ pub enum SyntaxNodeKind {
     ParameterList,
     CompoundStatement,
     Expression,
+    ForStatement,
     FunctionCall,
     SamplingStatement,
     Statement,
@@ -201,6 +202,7 @@ impl Parser {
 
     fn find_program_blocks(&mut self) {
         let mut first_by_kind = BTreeMap::<ProgramBlockKind, TextRange>::new();
+        let mut last_block_rank = None;
         let mut cursor = 0;
         while cursor < self.significant.len() {
             let Some((kind, header_len)) = self.block_header(cursor) else {
@@ -225,6 +227,15 @@ impl Parser {
                 start: self.tokens[start_index].range.start,
                 end: self.tokens[end_index].range.end,
             };
+            let rank = block_rank(kind);
+            if last_block_rank.is_some_and(|previous| rank < previous) {
+                self.diagnostics.push(Diagnostic::error(
+                    "syntax.program-block-order",
+                    format!("`{}` block appears out of order", kind.as_str()),
+                    range,
+                ));
+            }
+            last_block_rank = Some(rank);
             let node_index = self.nodes.len();
             self.nodes.push(SyntaxNode {
                 kind: SyntaxNodeKind::ProgramBlock(kind),
@@ -333,6 +344,37 @@ impl Parser {
     fn find_structures(&mut self) {
         let significant = self.significant.clone();
         for (position, index) in significant.iter().copied().enumerate() {
+            if self.tokens[index].kind == SyntaxKind::Keyword(Keyword::For) {
+                let Some(open) = significant.get(position + 1).copied() else {
+                    continue;
+                };
+                if self.tokens[open].kind != SyntaxKind::Symbol(Symbol::LeftParen) {
+                    continue;
+                }
+                let Some(close) = self.delimiter_pairs.get(&open).copied() else {
+                    continue;
+                };
+                let Some(brace) = significant
+                    .iter()
+                    .copied()
+                    .find(|candidate| *candidate > close)
+                else {
+                    continue;
+                };
+                if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
+                    continue;
+                }
+                let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+                self.nodes.push(SyntaxNode {
+                    kind: SyntaxNodeKind::ForStatement,
+                    range: TextRange {
+                        start: self.tokens[index].range.start,
+                        end: self.tokens[end].range.end,
+                    },
+                    token_range: index..end.saturating_add(1),
+                    parent: Some(0),
+                });
+            }
             if is_type_keyword(self.tokens[index].kind) {
                 self.nodes.push(SyntaxNode {
                     kind: SyntaxNodeKind::Type,
@@ -437,6 +479,9 @@ impl Parser {
         }
         for (position, index) in significant.iter().copied().enumerate() {
             match self.tokens[index].kind {
+                SyntaxKind::Symbol(Symbol::LeftBrace | Symbol::RightBrace) => {
+                    statement_start = position + 1;
+                }
                 SyntaxKind::Directive(_) => self.nodes.push(SyntaxNode {
                     kind: SyntaxNodeKind::Include,
                     range: self.tokens[index].range,
@@ -508,6 +553,16 @@ impl Parser {
                         .map(|relative| statement_start + relative + 1)
                     {
                         if let Some(expression) = significant.get(expression_start).copied() {
+                            if let Err(range) = parse_expression_pratt(
+                                &self.tokens,
+                                &significant[expression_start..position],
+                            ) {
+                                self.diagnostics.push(Diagnostic::error(
+                                    "syntax.expected-expression",
+                                    "expected a valid expression",
+                                    range,
+                                ));
+                            }
                             self.nodes.push(SyntaxNode {
                                 kind: SyntaxNodeKind::Expression,
                                 range: TextRange {
@@ -560,6 +615,160 @@ fn matching_open(close: Symbol) -> Symbol {
         Symbol::RightParen => Symbol::LeftParen,
         Symbol::RightBracket => Symbol::LeftBracket,
         _ => unreachable!("called only for closing delimiters"),
+    }
+}
+
+const fn block_rank(kind: ProgramBlockKind) -> u8 {
+    match kind {
+        ProgramBlockKind::Functions => 0,
+        ProgramBlockKind::Data => 1,
+        ProgramBlockKind::TransformedData => 2,
+        ProgramBlockKind::Parameters => 3,
+        ProgramBlockKind::TransformedParameters => 4,
+        ProgramBlockKind::Model => 5,
+        ProgramBlockKind::GeneratedQuantities => 6,
+    }
+}
+
+fn parse_expression_pratt(tokens: &[Token], indices: &[usize]) -> Result<(), TextRange> {
+    if indices.is_empty() {
+        return Err(TextRange::new(0, 0));
+    }
+    let mut parser = ExpressionParser {
+        tokens,
+        indices,
+        position: 0,
+    };
+    parser.parse_binding_power(0)?;
+    if parser.position == indices.len() {
+        Ok(())
+    } else {
+        Err(tokens[indices[parser.position]].range)
+    }
+}
+
+struct ExpressionParser<'a> {
+    tokens: &'a [Token],
+    indices: &'a [usize],
+    position: usize,
+}
+
+impl ExpressionParser<'_> {
+    fn parse_binding_power(&mut self, minimum: u8) -> Result<(), TextRange> {
+        let token = self.bump().ok_or_else(|| self.end_range())?;
+        match token.kind {
+            SyntaxKind::Identifier
+            | SyntaxKind::IntegerLiteral
+            | SyntaxKind::RealLiteral
+            | SyntaxKind::ImaginaryLiteral
+            | SyntaxKind::StringLiteral
+            | SyntaxKind::Keyword(Keyword::Target) => {}
+            SyntaxKind::Symbol(Symbol::LeftParen) => {
+                self.parse_binding_power(0)?;
+                self.expect(Symbol::RightParen)?;
+            }
+            SyntaxKind::Symbol(symbol)
+                if symbol
+                    .operator_forms()
+                    .iter()
+                    .any(|form| form.fixity == crate::Fixity::Prefix) =>
+            {
+                self.parse_binding_power(10)?;
+            }
+            _ => return Err(token.range),
+        }
+
+        loop {
+            let Some(next) = self.peek() else {
+                break;
+            };
+            match next.kind {
+                SyntaxKind::Symbol(Symbol::LeftParen) => {
+                    self.bump();
+                    if self.peek_kind() != Some(SyntaxKind::Symbol(Symbol::RightParen)) {
+                        loop {
+                            self.parse_binding_power(0)?;
+                            if self.peek_kind() == Some(SyntaxKind::Symbol(Symbol::Comma)) {
+                                self.bump();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Symbol::RightParen)?;
+                }
+                SyntaxKind::Symbol(Symbol::LeftBracket) => {
+                    self.bump();
+                    if self.peek_kind() != Some(SyntaxKind::Symbol(Symbol::RightBracket)) {
+                        loop {
+                            self.parse_binding_power(0)?;
+                            if self.peek_kind() == Some(SyntaxKind::Symbol(Symbol::Comma)) {
+                                self.bump();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Symbol::RightBracket)?;
+                }
+                SyntaxKind::Symbol(Symbol::Transpose) => {
+                    self.bump();
+                }
+                SyntaxKind::Symbol(symbol) => {
+                    let Some(form) = symbol
+                        .operator_forms()
+                        .iter()
+                        .find(|form| form.fixity == crate::Fixity::Infix)
+                    else {
+                        break;
+                    };
+                    if form.precedence < minimum {
+                        break;
+                    }
+                    self.bump();
+                    let next_minimum = match form.associativity {
+                        crate::Associativity::Right => form.precedence,
+                        crate::Associativity::Left | crate::Associativity::NonAssociative => {
+                            form.precedence + 1
+                        }
+                    };
+                    self.parse_binding_power(next_minimum)?;
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn expect(&mut self, symbol: Symbol) -> Result<(), TextRange> {
+        match self.bump() {
+            Some(token) if token.kind == SyntaxKind::Symbol(symbol) => Ok(()),
+            Some(token) => Err(token.range),
+            None => Err(self.end_range()),
+        }
+    }
+
+    fn peek(&self) -> Option<Token> {
+        self.indices
+            .get(self.position)
+            .map(|index| self.tokens[*index])
+    }
+
+    fn peek_kind(&self) -> Option<SyntaxKind> {
+        self.peek().map(|token| token.kind)
+    }
+
+    fn bump(&mut self) -> Option<Token> {
+        let token = self.peek()?;
+        self.position += 1;
+        Some(token)
+    }
+
+    fn end_range(&self) -> TextRange {
+        self.indices.last().map_or(TextRange::new(0, 0), |index| {
+            let end = self.tokens[*index].range.end as usize;
+            TextRange::new(end, end)
+        })
     }
 }
 
@@ -633,6 +842,17 @@ mod tests {
     }
 
     #[test]
+    fn program_block_order_is_checked() {
+        let result = parse_source("model {} data {}");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == "syntax.program-block-order")
+        );
+    }
+
+    #[test]
     fn arbitrary_editor_input_always_returns_a_lossless_tree() {
         let alphabet = [
             '{', '}', '(', ')', '[', ']', ';', '"', '/', '*', 'α', '\n', '1', '_',
@@ -664,5 +884,23 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn pratt_parser_respects_precedence_and_reports_incomplete_rhs() {
+        let valid = parse_source("model { real x; x = 1 + 2 * pow(3, 4); }");
+        assert!(
+            !valid
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == "syntax.expected-expression")
+        );
+        let invalid = parse_source("model { real x; x = 1 + ; }");
+        assert!(
+            invalid
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == "syntax.expected-expression")
+        );
     }
 }

@@ -56,6 +56,7 @@ pub struct SemanticModel {
     pub scopes: Vec<Scope>,
     pub references: Vec<Reference>,
     pub diagnostics: Vec<Diagnostic>,
+    pub inferred_types: BTreeMap<TextRange, StanType>,
 }
 
 pub fn analyze_semantics(text: &str, tokens: &[Token], syntax: &SyntaxTree) -> SemanticModel {
@@ -217,6 +218,26 @@ pub fn analyze_semantics(text: &str, tokens: &[Token], syntax: &SyntaxTree) -> S
                 range: tokens[token_index].range,
                 resolved,
             });
+            if let Some(r#type) = resolved
+                .and_then(|id| model.symbols.iter().find(|symbol| symbol.id == id))
+                .and_then(|symbol| symbol.declared_type.clone())
+            {
+                model
+                    .inferred_types
+                    .insert(tokens[token_index].range, r#type);
+            }
+        }
+    }
+
+    for token in tokens {
+        let inferred = match token.kind {
+            SyntaxKind::IntegerLiteral => Some(StanType::Int),
+            SyntaxKind::RealLiteral => Some(StanType::Real),
+            SyntaxKind::ImaginaryLiteral => Some(StanType::Complex),
+            _ => None,
+        };
+        if let Some(inferred) = inferred {
+            model.inferred_types.insert(token.range, inferred);
         }
     }
 
@@ -328,6 +349,19 @@ mod tests {
                 .references
                 .iter()
                 .all(|reference| reference.resolved.is_some())
+        );
+    }
+
+    #[test]
+    fn nested_scopes_allow_shadowing_without_duplicate_diagnostics() {
+        let analysis = analyze("model { real x; { real x; x = 1; } x = 2; }");
+        assert!(analysis.semantics.scopes.len() >= 3);
+        assert!(
+            !analysis
+                .semantics
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == "semantic.duplicate-declaration")
         );
     }
 }

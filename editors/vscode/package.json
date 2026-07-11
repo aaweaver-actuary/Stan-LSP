@@ -16,6 +16,11 @@
       "extensions": [".stan"],
       "configuration": "./language-configuration.json"
     }],
+    "grammars": [{
+      "language": "stan",
+      "scopeName": "source.stan",
+      "path": "./syntaxes/stan.tmLanguage.json"
+    }],
     "configuration": {
       "title": "Stan LSP",
       "properties": {
@@ -52,6 +57,21 @@
           "type": "number",
           "default": 500,
           "minimum": 0
+        },
+        "stanLsp.formatIndentWidth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 16
+        },
+        "stanLsp.lintLevels": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["allow", "hint", "warn", "deny"]
+          },
+          "description": "Per-rule lint levels keyed by stable diagnostic ID."
         },
         "stanLsp.trace.server": {
           "type": "string",

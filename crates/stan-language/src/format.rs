@@ -1,6 +1,6 @@
 //! Deterministic native formatting over the lossless syntax tree.
 
-use crate::{AnalysisSnapshot, Symbol, SyntaxKind};
+use crate::{AnalysisSnapshot, Symbol, SyntaxKind, SyntaxNodeKind, TextEdit, TextRange, analyze};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatterConfig {
@@ -93,6 +93,17 @@ pub fn format(
                 output.push_str(spelling);
                 pending_space = true;
             }
+            SyntaxKind::IncludePath => {
+                write_pending(
+                    &mut output,
+                    &mut line_start,
+                    &mut pending_space,
+                    indent,
+                    config,
+                );
+                output.push_str(spelling);
+                newline(&mut output, &mut line_start, &mut pending_space);
+            }
             SyntaxKind::Symbol(Symbol::LeftBrace) => {
                 write_pending(
                     &mut output,
@@ -166,6 +177,34 @@ pub fn format(
     Ok(output)
 }
 
+pub fn format_range(
+    snapshot: &AnalysisSnapshot,
+    config: &FormatterConfig,
+    requested: TextRange,
+) -> Result<TextEdit, FormatError> {
+    let node = snapshot
+        .syntax
+        .nodes()
+        .iter()
+        .filter(|node| {
+            node.range.start <= requested.start
+                && requested.end <= node.range.end
+                && matches!(
+                    node.kind,
+                    SyntaxNodeKind::Statement
+                        | SyntaxNodeKind::VariableDeclaration
+                        | SyntaxNodeKind::SamplingStatement
+                        | SyntaxNodeKind::ProgramBlock(_)
+                        | SyntaxNodeKind::FunctionDeclaration
+                )
+        })
+        .min_by_key(|node| node.range.end - node.range.start);
+    let range = node.map_or(requested, |node| node.range);
+    let source = &snapshot.syntax.text()[range.start as usize..range.end as usize];
+    let replacement = format(&analyze(source), config)?;
+    Ok(TextEdit { range, replacement })
+}
+
 fn needs_separation(kind: SyntaxKind) -> bool {
     matches!(
         kind,
@@ -177,7 +216,6 @@ fn needs_separation(kind: SyntaxKind) -> bool {
             | SyntaxKind::StringLiteral
             | SyntaxKind::Legacy(_)
             | SyntaxKind::Directive(_)
-            | SyntaxKind::IncludePath
     )
 }
 
@@ -237,5 +275,43 @@ mod tests {
         );
         let second = format(&analyze(&first), &FormatterConfig::default()).unwrap();
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn formatting_preserves_comments_directives_and_strings() {
+        let source = "#include shared.stan\nmodel{/* keep */print(\"a b\");// tail\n}";
+        let formatted = format(&analyze(source), &FormatterConfig::default()).unwrap();
+        for preserved in ["#include shared.stan", "/* keep */", "\"a b\"", "// tail"] {
+            assert!(formatted.contains(preserved), "{formatted}");
+        }
+        assert_eq!(
+            format(&analyze(&formatted), &FormatterConfig::default()).unwrap(),
+            formatted
+        );
+    }
+
+    #[test]
+    fn formatter_configuration_is_strict() {
+        assert_eq!(
+            FormatterConfig::from_toml("indent_width = 4")
+                .unwrap()
+                .indent_width,
+            4
+        );
+        assert!(FormatterConfig::from_toml("unknown = 1").is_err());
+    }
+
+    #[test]
+    fn range_formatting_selects_a_complete_syntax_construct() {
+        let source = "model { real x; x=1; }";
+        let snapshot = analyze(source);
+        let offset = source.find("x=1").unwrap();
+        let edit = format_range(
+            &snapshot,
+            &FormatterConfig::default(),
+            TextRange::new(offset, offset + 3),
+        )
+        .unwrap();
+        assert_eq!(edit.replacement, "x = 1;\n");
     }
 }

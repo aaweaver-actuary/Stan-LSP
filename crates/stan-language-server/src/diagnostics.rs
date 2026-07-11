@@ -7,37 +7,56 @@ use tower_lsp_server::ls_types::{
 use crate::document::Document;
 
 pub fn diagnostics(document: &Document) -> Vec<Diagnostic> {
+    diagnostics_with_lints(document, &LintConfig::default())
+}
+
+pub fn diagnostics_with_lints(document: &Document, lint_config: &LintConfig) -> Vec<Diagnostic> {
     document
         .analysis
         .diagnostics
         .iter()
         .cloned()
-        .chain(lint(&document.analysis, &LintConfig::default()))
+        .chain(lint(&document.analysis, lint_config))
         .filter_map(|diagnostic| to_lsp(document, diagnostic))
         .collect()
 }
 
+pub fn with_compiler(
+    document: &Document,
+    compiler: impl IntoIterator<Item = StanDiagnostic>,
+) -> Vec<Diagnostic> {
+    with_compiler_and_lints(document, compiler, &LintConfig::default())
+}
+
+pub fn with_compiler_and_lints(
+    document: &Document,
+    compiler: impl IntoIterator<Item = StanDiagnostic>,
+    lint_config: &LintConfig,
+) -> Vec<Diagnostic> {
+    let mut merged = diagnostics_with_lints(document, lint_config);
+    for diagnostic in compiler {
+        let Some(diagnostic) = to_lsp(document, diagnostic) else {
+            continue;
+        };
+        let duplicate = merged.iter().any(|existing| {
+            existing.range == diagnostic.range && existing.message == diagnostic.message
+        });
+        if !duplicate {
+            merged.push(diagnostic);
+        }
+    }
+    merged
+}
+
 pub fn to_lsp(document: &Document, diagnostic: StanDiagnostic) -> Option<Diagnostic> {
-    let start = document
-        .line_index
-        .offset_to_position(&document.text, diagnostic.primary_range.start as usize)
-        .ok()?;
-    let end = document
-        .line_index
-        .offset_to_position(&document.text, diagnostic.primary_range.end as usize)
-        .ok()?;
+    let start = diagnostic_position(document, diagnostic.primary_range.start, diagnostic.code.0)?;
+    let end = diagnostic_position(document, diagnostic.primary_range.end, diagnostic.code.0)?;
     let related_information = diagnostic
         .related
         .iter()
         .filter_map(|related| {
-            let start = document
-                .line_index
-                .offset_to_position(&document.text, related.range.start as usize)
-                .ok()?;
-            let end = document
-                .line_index
-                .offset_to_position(&document.text, related.range.end as usize)
-                .ok()?;
+            let start = diagnostic_position(document, related.range.start, diagnostic.code.0)?;
+            let end = diagnostic_position(document, related.range.end, diagnostic.code.0)?;
             Some(DiagnosticRelatedInformation {
                 location: Location::new(document.uri.clone(), Range::new(start, end)),
                 message: related.message.clone(),
@@ -70,4 +89,28 @@ pub fn to_lsp(document: &Document, diagnostic: StanDiagnostic) -> Option<Diagnos
         message: diagnostic.message,
         ..Diagnostic::default()
     })
+}
+
+fn diagnostic_position(
+    document: &Document,
+    offset: u32,
+    code: &str,
+) -> Option<tower_lsp_server::ls_types::Position> {
+    match document
+        .line_index
+        .offset_to_position(&document.text, offset as usize)
+    {
+        Ok(position) => Some(position),
+        Err(error) => {
+            tracing::error!(
+                uri = %document.uri.as_str(),
+                version = document.version,
+                offset,
+                code,
+                ?error,
+                "internal diagnostic range invariant failed"
+            );
+            None
+        }
+    }
 }
