@@ -2,15 +2,16 @@
 
 This repository is the Rust foundation for a Stan language server. The current
 milestone provides a complete, versioned Stan 2.39 vocabulary and function
-signature catalog plus a minimal Language Server Protocol process. Parsing,
-document synchronization, completion, diagnostics, and lint rules are intentionally
-left for later milestones.
+signature catalog plus an initial Language Server Protocol diagnostic pipeline.
+The server tracks full-document updates, converts UTF-8 byte ranges to LSP UTF-16
+positions, lexes source losslessly, and publishes lexical diagnostics. Parsing,
+completion, semantic diagnostics, and lint rules remain later milestones.
 
 ## Workspace
 
 - `stan-token-derive`: `#[derive(Token)]` for fixed-spelling unit enums.
-- `stan-language`: language elements, distributions, function metadata, and 2.39 signatures.
-- `stan-language-server`: a stdio LSP server supporting initialize, shutdown, and exit.
+- `stan-language`: language elements, lossless lexing, distributions, function metadata, and 2.39 signatures.
+- `stan-language-server`: a stdio LSP server with full document synchronization and lexical diagnostics.
 - `xtask`: deterministic catalog refresh and drift checking.
 
 The workspace uses Rust edition 2024 and declares Rust 1.85 as its minimum
@@ -50,6 +51,6 @@ See [docs/sources.md](docs/sources.md) for provenance and catalog policy.
 
 ## Licensing
 
-No project license has been selected yet. The Stan documentation and compiler
-sources retain their respective upstream licenses; see the provenance document.
-
+The project is available under the MIT or Apache-2.0 license, at your option.
+The Stan documentation and compiler sources retain their respective upstream
+licenses; see the provenance document.

@@ -52,7 +52,13 @@ fn initializes_and_shuts_down_over_stdio() {
         initialize["result"]["serverInfo"]["name"],
         "stan-language-server"
     );
-    assert_eq!(initialize["result"]["capabilities"], json!({}));
+    assert_eq!(
+        initialize["result"]["capabilities"],
+        json!({
+            "positionEncoding": "utf-16",
+            "textDocumentSync": {"openClose": true, "change": 1}
+        })
+    );
 
     stdin
         .write_all(&frame(
@@ -87,4 +93,95 @@ fn initializes_and_shuts_down_over_stdio() {
         .unwrap();
     let status = child.wait().unwrap();
     assert!(status.success(), "server failed: {stderr}");
+}
+
+#[test]
+fn publishes_and_clears_versioned_lexical_diagnostics() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_stan-language-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let uri = "file:///tmp/diagnostic-model.stan";
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"processId": null, "capabilities": {}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "initialized", "params": {}
+        })))
+        .unwrap();
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "stan", "version": 1,
+                "text": "model {\n  @\n}"
+            }}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+
+    let published = read_frame(&mut stdout);
+    assert_eq!(published["method"], "textDocument/publishDiagnostics");
+    assert_eq!(published["params"]["uri"], uri);
+    assert_eq!(published["params"]["version"], 1);
+    assert_eq!(
+        published["params"]["diagnostics"][0]["code"],
+        "lex.invalid-character"
+    );
+    assert_eq!(published["params"]["diagnostics"][0]["source"], "stan-lsp");
+    assert_eq!(
+        published["params"]["diagnostics"][0]["range"],
+        json!({"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 3}})
+    );
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "model {\n}"}]
+            }
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let cleared = read_frame(&mut stdout);
+    assert_eq!(cleared["params"]["version"], 2);
+    assert_eq!(cleared["params"]["diagnostics"], json!([]));
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didClose",
+            "params": {"textDocument": {"uri": uri}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let closed = read_frame(&mut stdout);
+    assert_eq!(closed["params"]["diagnostics"], json!([]));
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "exit", "params": null
+        })))
+        .unwrap();
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success());
 }

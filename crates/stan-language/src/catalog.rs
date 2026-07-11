@@ -9,6 +9,28 @@ use crate::{
 const SIGNATURES: &str = include_str!("../../../catalog/stan-2.39/signatures.txt");
 const SPECIAL_SIGNATURES: &str = include_str!("../../../catalog/stan-2.39/special-signatures.tsv");
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CatalogErrorKind {
+    #[error("malformed signature: {0}")]
+    MalformedSignature(String),
+    #[error("unknown function: {0}")]
+    UnknownFunction(String),
+    #[error("unknown Stan type: {0}")]
+    UnknownType(String),
+    #[error("invalid special signature: {0}")]
+    InvalidSpecialSignature(String),
+    #[error("unbalanced delimiter")]
+    UnbalancedDelimiter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{source_name}, line {line}: {kind}")]
+pub struct CatalogError {
+    pub source_name: &'static str,
+    pub line: usize,
+    pub kind: CatalogErrorKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionMetadata {
     pub categories: BTreeSet<FunctionCategory>,
@@ -26,51 +48,55 @@ impl FunctionCatalog {
     pub fn global() -> &'static Self {
         static CATALOG: OnceLock<FunctionCatalog> = OnceLock::new();
         CATALOG.get_or_init(|| {
-            Self::parse(SIGNATURES).expect("embedded Stan 2.39 signature catalog is valid")
+            Self::parse_embedded().expect("embedded Stan 2.39 signature catalog is valid")
         })
     }
 
-    pub fn parse(input: &str) -> Result<Self, String> {
+    pub fn parse(signatures_input: &str, special_input: &str) -> Result<Self, CatalogError> {
         let mut signatures = BTreeMap::<StanFunction, Vec<FunctionSignature>>::new();
-        for (line_number, raw_line) in input.lines().enumerate() {
+        for (line_number, raw_line) in signatures_input.lines().enumerate() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (name, signature) = parse_signature(line)
-                .map_err(|error| format!("line {}: {error}", line_number + 1))?;
-            let function = StanFunction::from_str(name)
-                .map_err(|_| format!("line {}: unknown function {name:?}", line_number + 1))?;
+            let (name, signature) = parse_signature(line).map_err(|kind| CatalogError {
+                source_name: "signatures",
+                line: line_number + 1,
+                kind,
+            })?;
+            let function = StanFunction::from_str(name).map_err(|_| CatalogError {
+                source_name: "signatures",
+                line: line_number + 1,
+                kind: CatalogErrorKind::UnknownFunction(name.to_owned()),
+            })?;
             signatures
                 .entry(function)
                 .or_default()
                 .push(FunctionSignature::Concrete(signature));
         }
 
-        for (line_number, raw_line) in SPECIAL_SIGNATURES.lines().enumerate() {
+        for (line_number, raw_line) in special_input.lines().enumerate() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let mut fields = line.splitn(3, '\t');
             let name = fields.next().unwrap_or_default();
-            let display = fields.next().ok_or_else(|| {
-                format!(
-                    "special signature line {} has no display form",
-                    line_number + 1
-                )
-            })?;
-            let return_type = fields.next().ok_or_else(|| {
-                format!(
-                    "special signature line {} has no return type",
-                    line_number + 1
-                )
-            })?;
-            let function = StanFunction::from_str(name).map_err(|_| {
-                format!(
-                    "special signature line {} has unknown function {name:?}",
-                    line_number + 1
-                )
+            let special_error = |message: &str| CatalogError {
+                source_name: "special-signatures",
+                line: line_number + 1,
+                kind: CatalogErrorKind::InvalidSpecialSignature(message.to_owned()),
+            };
+            let display = fields
+                .next()
+                .ok_or_else(|| special_error("missing display form"))?;
+            let return_type = fields
+                .next()
+                .ok_or_else(|| special_error("missing return type"))?;
+            let function = StanFunction::from_str(name).map_err(|_| CatalogError {
+                source_name: "special-signatures",
+                line: line_number + 1,
+                kind: CatalogErrorKind::UnknownFunction(name.to_owned()),
             })?;
             let return_type = if return_type == "void" {
                 ReturnType::Void
@@ -126,6 +152,10 @@ impl FunctionCatalog {
         })
     }
 
+    fn parse_embedded() -> Result<Self, CatalogError> {
+        Self::parse(SIGNATURES, SPECIAL_SIGNATURES)
+    }
+
     pub fn signatures(&self, function: StanFunction) -> &[FunctionSignature] {
         self.signatures
             .get(&function)
@@ -176,22 +206,22 @@ fn infer_metadata(function: StanFunction) -> FunctionMetadata {
     }
 }
 
-fn parse_signature(line: &str) -> Result<(&str, ConcreteSignature), String> {
+fn parse_signature(line: &str) -> Result<(&str, ConcreteSignature), CatalogErrorKind> {
     let open = line
         .find('(')
-        .ok_or_else(|| format!("missing argument list in {line:?}"))?;
+        .ok_or_else(|| CatalogErrorKind::MalformedSignature("missing argument list".to_owned()))?;
     let close = matching_delimiter(line, open, '(', ')')?;
     let name = &line[..open];
     let tail = line[close + 1..].trim();
     let return_text = tail
         .strip_prefix("=>")
-        .ok_or_else(|| format!("missing return arrow in {line:?}"))?
+        .ok_or_else(|| CatalogErrorKind::MalformedSignature("missing return arrow".to_owned()))?
         .trim();
     let arguments = &line[open + 1..close];
     let parameters = if arguments.trim().is_empty() {
         Vec::new()
     } else {
-        split_top_level(arguments, ',')
+        split_top_level(arguments, ',')?
             .into_iter()
             .map(parse_parameter)
             .collect::<Result<Vec<_>, _>>()?
@@ -210,7 +240,7 @@ fn parse_signature(line: &str) -> Result<(&str, ConcreteSignature), String> {
     ))
 }
 
-fn parse_parameter(text: &str) -> Result<Parameter, String> {
+fn parse_parameter(text: &str) -> Result<Parameter, CatalogErrorKind> {
     let text = text.trim();
     if text.starts_with('(') {
         return Ok(Parameter {
@@ -228,12 +258,12 @@ fn parse_parameter(text: &str) -> Result<Parameter, String> {
     })
 }
 
-fn parse_type(text: &str) -> Result<StanType, String> {
+fn parse_type(text: &str) -> Result<StanType, CatalogErrorKind> {
     let text = text.trim();
     if let Some(rest) = text.strip_prefix("array[") {
         let close = rest
             .find(']')
-            .ok_or_else(|| format!("unterminated array type {text:?}"))?;
+            .ok_or(CatalogErrorKind::UnbalancedDelimiter)?;
         let dimensions = rest[..close]
             .chars()
             .filter(|character| *character == ',')
@@ -241,7 +271,7 @@ fn parse_type(text: &str) -> Result<StanType, String> {
             + 1;
         let element = rest[close + 1..].trim();
         if element.is_empty() {
-            return Err(format!("array type has no element type: {text:?}"));
+            return Err(CatalogErrorKind::UnknownType(text.to_owned()));
         }
         return Ok(StanType::Array {
             dimensions,
@@ -251,10 +281,12 @@ fn parse_type(text: &str) -> Result<StanType, String> {
     if text.starts_with("tuple(") {
         let close = matching_delimiter(text, 5, '(', ')')?;
         if close != text.len() - 1 {
-            return Err(format!("unexpected tuple suffix in {text:?}"));
+            return Err(CatalogErrorKind::MalformedSignature(format!(
+                "unexpected tuple suffix in {text:?}"
+            )));
         }
         let inner = &text[6..close];
-        let elements = split_top_level(inner, ',')
+        let elements = split_top_level(inner, ',')?
             .into_iter()
             .map(parse_type)
             .collect::<Result<Vec<_>, _>>()?;
@@ -270,11 +302,16 @@ fn parse_type(text: &str) -> Result<StanType, String> {
         "complex_vector" => Ok(StanType::ComplexVector),
         "complex_row_vector" => Ok(StanType::ComplexRowVector),
         "complex_matrix" => Ok(StanType::ComplexMatrix),
-        _ => Err(format!("unknown Stan type {text:?}")),
+        _ => Err(CatalogErrorKind::UnknownType(text.to_owned())),
     }
 }
 
-fn matching_delimiter(text: &str, open: usize, left: char, right: char) -> Result<usize, String> {
+fn matching_delimiter(
+    text: &str,
+    open: usize,
+    left: char,
+    right: char,
+) -> Result<usize, CatalogErrorKind> {
     let mut depth = 0usize;
     for (offset, character) in text[open..].char_indices() {
         if character == left {
@@ -283,35 +320,44 @@ fn matching_delimiter(text: &str, open: usize, left: char, right: char) -> Resul
         if character == right {
             depth = depth
                 .checked_sub(1)
-                .ok_or_else(|| format!("unbalanced delimiter in {text:?}"))?;
+                .ok_or(CatalogErrorKind::UnbalancedDelimiter)?;
             if depth == 0 {
                 return Ok(open + offset);
             }
         }
     }
-    Err(format!("unclosed delimiter in {text:?}"))
+    Err(CatalogErrorKind::UnbalancedDelimiter)
 }
 
-fn split_top_level(text: &str, separator: char) -> Vec<&str> {
-    let mut round = 0usize;
-    let mut square = 0usize;
+fn split_top_level(text: &str, separator: char) -> Result<Vec<&str>, CatalogErrorKind> {
+    let mut delimiters = Vec::new();
     let mut start = 0usize;
     let mut values = Vec::new();
     for (index, character) in text.char_indices() {
         match character {
-            '(' => round += 1,
-            ')' => round = round.saturating_sub(1),
-            '[' => square += 1,
-            ']' => square = square.saturating_sub(1),
-            _ if character == separator && round == 0 && square == 0 => {
+            '(' | '[' => delimiters.push(character),
+            ')' => {
+                if delimiters.pop() != Some('(') {
+                    return Err(CatalogErrorKind::UnbalancedDelimiter);
+                }
+            }
+            ']' => {
+                if delimiters.pop() != Some('[') {
+                    return Err(CatalogErrorKind::UnbalancedDelimiter);
+                }
+            }
+            _ if character == separator && delimiters.is_empty() => {
                 values.push(text[start..index].trim());
                 start = index + character.len_utf8();
             }
             _ => {}
         }
     }
+    if !delimiters.is_empty() {
+        return Err(CatalogErrorKind::UnbalancedDelimiter);
+    }
     values.push(text[start..].trim());
-    values
+    Ok(values)
 }
 
 #[cfg(test)]
@@ -332,5 +378,21 @@ mod tests {
                 element: Box::new(StanType::Complex),
             })
         );
+    }
+
+    #[test]
+    fn explicit_inputs_are_isolated_and_errors_are_structured() {
+        let catalog = FunctionCatalog::parse("abs(real) => real", "").unwrap();
+        assert_eq!(catalog.signatures(StanFunction::Abs).len(), 1);
+        assert!(catalog.signatures(StanFunction::ReduceSum).is_empty());
+
+        let error = FunctionCatalog::parse("abs(real]) => real", "").unwrap_err();
+        assert_eq!(error.source_name, "signatures");
+        assert_eq!(error.line, 1);
+        assert_eq!(error.kind, CatalogErrorKind::UnbalancedDelimiter);
+
+        let error =
+            FunctionCatalog::parse("abs(tuple(real, array[] int]) => real", "").unwrap_err();
+        assert_eq!(error.kind, CatalogErrorKind::UnbalancedDelimiter);
     }
 }

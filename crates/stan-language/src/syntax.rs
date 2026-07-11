@@ -6,16 +6,16 @@ pub enum Keyword {
     Functions,
     #[token("data")]
     Data,
-    #[token("transformed data")]
-    TransformedData,
+    #[token("transformed")]
+    Transformed,
     #[token("parameters")]
     Parameters,
-    #[token("transformed parameters")]
-    TransformedParameters,
     #[token("model")]
     Model,
-    #[token("generated quantities")]
-    GeneratedQuantities,
+    #[token("generated")]
+    Generated,
+    #[token("quantities")]
+    Quantities,
     #[token("return")]
     Return,
     #[token("if")]
@@ -119,12 +119,8 @@ impl Keyword {
     pub const fn roles(&self) -> &'static [KeywordRole] {
         use KeywordRole::*;
         match self {
-            Self::Functions
-            | Self::TransformedData
-            | Self::Parameters
-            | Self::TransformedParameters
-            | Self::Model
-            | Self::GeneratedQuantities => &[ProgramBlock],
+            Self::Functions | Self::Parameters | Self::Model => &[ProgramBlock],
+            Self::Transformed | Self::Generated | Self::Quantities => &[ProgramBlock],
             Self::Data => &[ProgramBlock, Qualifier],
             Self::Return
             | Self::If
@@ -163,6 +159,41 @@ impl Keyword {
             Self::Jacobian | Self::Target => &[SpecialIdentifier],
             Self::Print | Self::Reject | Self::FatalError => &[Statement],
             Self::Truncation => &[SpecialIdentifier],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProgramBlockKind {
+    Functions,
+    Data,
+    TransformedData,
+    Parameters,
+    TransformedParameters,
+    Model,
+    GeneratedQuantities,
+}
+
+impl ProgramBlockKind {
+    pub const ALL: &'static [Self] = &[
+        Self::Functions,
+        Self::Data,
+        Self::TransformedData,
+        Self::Parameters,
+        Self::TransformedParameters,
+        Self::Model,
+        Self::GeneratedQuantities,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Functions => "functions",
+            Self::Data => "data",
+            Self::TransformedData => "transformed data",
+            Self::Parameters => "parameters",
+            Self::TransformedParameters => "transformed parameters",
+            Self::Model => "model",
+            Self::GeneratedQuantities => "generated quantities",
         }
     }
 }

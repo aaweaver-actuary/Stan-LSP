@@ -3,6 +3,7 @@ name = "stan-token-derive"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [lib]
 proc-macro = true
@@ -14,4 +15,3 @@ syn.workspace = true
 
 [dev-dependencies]
 trybuild = "1.0"
-

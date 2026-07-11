@@ -471,6 +471,7 @@ name = "stan-language-server"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "stan-language",
  "tokio",
  "tower-lsp-server",
  "tracing",

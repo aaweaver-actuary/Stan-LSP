@@ -47,13 +47,19 @@ fn enums_match_the_pinned_compiler_inventory() {
                 .map(|value| ("directive", value.as_str())),
         )
         .collect::<BTreeSet<_>>();
-    let expected = INVENTORY
+    let mut expected = BTreeSet::new();
+    for line in INVENTORY
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            line.split_once('\t')
-                .expect("inventory entries contain a tab")
-        })
-        .collect::<BTreeSet<_>>();
+    {
+        let (category, spelling) = line
+            .split_once('\t')
+            .expect("inventory entries contain a tab");
+        if category == "keyword" && spelling.contains(' ') {
+            expected.extend(spelling.split_whitespace().map(|word| (category, word)));
+        } else {
+            expected.insert((category, spelling));
+        }
+    }
     assert_eq!(actual, expected);
 }
