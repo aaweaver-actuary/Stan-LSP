@@ -1,0 +1,5 @@
+error: expected exactly one #[token("...")] attribute
+ --> tests/ui/repeated.rs:7:5
+  |
+7 |     Value,
+  |     ^^^^^

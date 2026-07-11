@@ -1,0 +1,14 @@
+error: Token enums cannot have generic parameters or where clauses
+ --> tests/ui/generic.rs:4:13
+  |
+4 | enum Generic<T> {
+  |             ^^^
+
+error[E0392]: type parameter `T` is never used
+ --> tests/ui/generic.rs:4:14
+  |
+4 | enum Generic<T> {
+  |              ^ unused type parameter
+  |
+  = help: consider removing `T`, referring to it in a field, or using a marker such as `PhantomData`
+  = help: if you intended `T` to be a const parameter, use `const T: /* Type */` instead

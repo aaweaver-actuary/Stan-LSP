@@ -1,0 +1,5 @@
+error: Token can only be derived for unit variants
+ --> tests/ui/non_unit.rs:6:5
+  |
+6 |     Tuple(u8),
+  |     ^^^^^

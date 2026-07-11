@@ -1,0 +1,5 @@
+error: token value cannot be empty
+ --> tests/ui/empty.rs:5:13
+  |
+5 |     #[token("")]
+  |             ^^

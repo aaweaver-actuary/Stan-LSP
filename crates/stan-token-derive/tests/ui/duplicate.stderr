@@ -1,0 +1,11 @@
+error: duplicate token value "same"
+ --> tests/ui/duplicate.rs:7:13
+  |
+7 |     #[token("same")]
+  |             ^^^^^^
+
+error: first declared here
+ --> tests/ui/duplicate.rs:5:13
+  |
+5 |     #[token("same")]
+  |             ^^^^^^
