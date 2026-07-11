@@ -9,3 +9,7 @@ license.workspace = true
 serde.workspace = true
 stan-token-derive = { path = "../stan-token-derive" }
 thiserror.workspace = true
+
+[[bench]]
+name = "analysis"
+harness = false

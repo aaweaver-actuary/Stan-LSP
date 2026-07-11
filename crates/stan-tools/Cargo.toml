@@ -1,0 +1,18 @@
+[package]
+name = "stan-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "stanfmt"
+path = "src/bin/stanfmt.rs"
+
+[[bin]]
+name = "stanlint"
+path = "src/bin/stanlint.rs"
+
+[dependencies]
+serde_json.workspace = true
+stan-language = { path = "../stan-language" }

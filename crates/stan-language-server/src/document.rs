@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use stan_language::{AnalysisSnapshot, Revision, analyze_revision};
+use std::sync::Arc;
 use tower_lsp_server::ls_types::Uri;
 
 use crate::line_index::LineIndex;
@@ -10,16 +12,19 @@ pub struct Document {
     pub version: i32,
     pub text: String,
     pub line_index: LineIndex,
+    pub analysis: Arc<AnalysisSnapshot>,
 }
 
 impl Document {
     pub fn new(uri: Uri, version: i32, text: String) -> Self {
         let line_index = LineIndex::new(&text);
+        let analysis = Arc::new(analyze_revision(&text, Revision(version as u64)));
         Self {
             uri,
             version,
             text,
             line_index,
+            analysis,
         }
     }
 }
@@ -45,6 +50,10 @@ impl DocumentStore {
 
     pub fn close(&mut self, uri: &Uri) -> Option<Document> {
         self.documents.remove(uri)
+    }
+
+    pub fn get(&self, uri: &Uri) -> Option<&Document> {
+        self.documents.get(uri)
     }
 }
 

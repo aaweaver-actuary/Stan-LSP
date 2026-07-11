@@ -52,13 +52,16 @@ fn initializes_and_shuts_down_over_stdio() {
         initialize["result"]["serverInfo"]["name"],
         "stan-language-server"
     );
+    let capabilities = &initialize["result"]["capabilities"];
+    assert_eq!(capabilities["positionEncoding"], "utf-16");
     assert_eq!(
-        initialize["result"]["capabilities"],
-        json!({
-            "positionEncoding": "utf-16",
-            "textDocumentSync": {"openClose": true, "change": 1}
-        })
+        capabilities["textDocumentSync"],
+        json!({"openClose": true, "change": 1, "save": true})
     );
+    assert_eq!(capabilities["hoverProvider"], true);
+    assert_eq!(capabilities["documentSymbolProvider"], true);
+    assert_eq!(capabilities["foldingRangeProvider"], true);
+    assert!(capabilities["semanticTokensProvider"].is_object());
 
     stdin
         .write_all(&frame(
@@ -184,4 +187,139 @@ fn publishes_and_clears_versioned_lexical_diagnostics() {
     drop(stdin);
     let status = child.wait().unwrap();
     assert!(status.success());
+}
+
+#[test]
+fn advertised_editor_features_respond_over_stdio() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_stan-language-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let uri = "file:///tmp/features-model.stan";
+    let source = "parameters { real theta; }\nmodel { theta ~ normal(0, 1); }\n";
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"processId": null, "capabilities": {}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+        ))
+        .unwrap();
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": uri, "languageId": "stan", "version": 1, "text": source}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _diagnostics = read_frame(&mut stdout);
+
+    let requests = [
+        (
+            2,
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+        ),
+        (
+            3,
+            "textDocument/foldingRange",
+            json!({"textDocument": {"uri": uri}}),
+        ),
+        (
+            4,
+            "textDocument/semanticTokens/full",
+            json!({"textDocument": {"uri": uri}}),
+        ),
+        (
+            5,
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 18}}),
+        ),
+        (
+            6,
+            "textDocument/completion",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 22}}),
+        ),
+        (
+            7,
+            "textDocument/signatureHelp",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 24}}),
+        ),
+        (
+            8,
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 9}}),
+        ),
+        (
+            9,
+            "textDocument/references",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 9}, "context": {"includeDeclaration": true}}),
+        ),
+        (
+            10,
+            "textDocument/documentHighlight",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 9}}),
+        ),
+        (
+            11,
+            "textDocument/formatting",
+            json!({"textDocument": {"uri": uri}, "options": {"tabSize": 2, "insertSpaces": true}}),
+        ),
+        (
+            12,
+            "textDocument/rangeFormatting",
+            json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 31}}, "options": {"tabSize": 2, "insertSpaces": true}}),
+        ),
+        (
+            13,
+            "textDocument/inlayHint",
+            json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 31}}}),
+        ),
+        (
+            14,
+            "textDocument/rename",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 9}, "newName": "renamed"}),
+        ),
+        (
+            15,
+            "textDocument/codeAction",
+            json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 31}}, "context": {"diagnostics": []}}),
+        ),
+    ];
+    for (id, method, params) in requests {
+        stdin
+            .write_all(&frame(
+                json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+            ))
+            .unwrap();
+        stdin.flush().unwrap();
+        let response = read_frame(&mut stdout);
+        assert_eq!(response["id"], id, "{method}: {response}");
+        assert!(response.get("error").is_none(), "{method}: {response}");
+        assert!(!response["result"].is_null(), "{method}: {response}");
+    }
+
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "id": 20, "method": "shutdown", "params": null}),
+        ))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        ))
+        .unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
 }

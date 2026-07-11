@@ -22,6 +22,7 @@ pub enum SyntaxKind {
     Keyword(Keyword),
     Symbol(Symbol),
     Directive(Directive),
+    IncludePath,
     Legacy(LegacyLanguageElement),
     Identifier,
     IntegerLiteral,
@@ -88,6 +89,7 @@ pub fn lex(text: &str) -> LexResult {
     Lexer {
         text,
         offset: 0,
+        expect_include_path: false,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
     }
@@ -99,6 +101,7 @@ struct Lexer<'a> {
     offset: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<LexicalDiagnostic>,
+    expect_include_path: bool,
 }
 
 impl Lexer<'_> {
@@ -123,7 +126,30 @@ impl Lexer<'_> {
 
         if first.is_whitespace() {
             self.consume_while(char::is_whitespace);
+            if self.expect_include_path
+                && self.text[start..self.offset]
+                    .chars()
+                    .any(|character| character == '\n' || character == '\r')
+            {
+                self.expect_include_path = false;
+            }
             return self.push(SyntaxKind::Whitespace, start);
+        }
+        if self.expect_include_path {
+            self.expect_include_path = false;
+            if first == '"' {
+                self.offset += first.len_utf8();
+                while self.offset < self.text.len() {
+                    let character = self.text[self.offset..].chars().next().expect("source remains");
+                    self.offset += character.len_utf8();
+                    if character == '"' {
+                        break;
+                    }
+                }
+            } else {
+                self.consume_while(|character| !character.is_whitespace());
+            }
+            return self.push(SyntaxKind::IncludePath, start);
         }
         if remaining.starts_with("//") {
             self.offset += 2;
@@ -213,6 +239,7 @@ impl Lexer<'_> {
     fn directive(&mut self, start: usize) {
         if self.text[start..].starts_with(Directive::Include.as_str()) {
             self.offset += Directive::Include.as_str().len();
+            self.expect_include_path = true;
             self.push(SyntaxKind::Directive(Directive::Include), start);
         } else {
             self.offset += 1;
@@ -382,5 +409,15 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn include_paths_are_single_lossless_tokens() {
+        let result = lex("#include \"shared/functions.stan\"\n");
+        assert!(result.diagnostics.is_empty());
+        assert!(result
+            .tokens
+            .iter()
+            .any(|token| token.kind == SyntaxKind::IncludePath));
     }
 }

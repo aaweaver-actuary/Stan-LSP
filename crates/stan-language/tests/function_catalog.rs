@@ -145,3 +145,10 @@ fn manual_introduction_versions_are_preserved() {
         } if version == stan_language::StanVersion::new(2, 39, 0)
     ));
 }
+
+#[test]
+fn catalog_selection_is_explicit_and_versioned() {
+    assert!(FunctionCatalog::for_version(STAN_VERSION).is_some());
+    assert!(FunctionCatalog::for_version(stan_language::StanVersion::new(2, 38, 0)).is_none());
+    assert_eq!(FunctionCatalog::supported_versions(), &[STAN_VERSION]);
+}

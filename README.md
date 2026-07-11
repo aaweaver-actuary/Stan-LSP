@@ -2,16 +2,19 @@
 
 This repository is the Rust foundation for a Stan language server. The current
 milestone provides a complete, versioned Stan 2.39 vocabulary and function
-signature catalog plus an initial Language Server Protocol diagnostic pipeline.
+signature catalog plus a growing Language Server Protocol analysis pipeline.
 The server tracks full-document updates, converts UTF-8 byte ranges to LSP UTF-16
-positions, lexes source losslessly, and publishes lexical diagnostics. Parsing,
-completion, semantic diagnostics, and lint rules remain later milestones.
+positions, builds a lossless recovery syntax model, and publishes lexical and
+structural diagnostics. It also provides program-block symbols, folding, semantic
+tokens, catalog hover/completion/signature help, native formatting, configurable
+lint infrastructure, and optional stanc3 validation on save.
 
 ## Workspace
 
 - `stan-token-derive`: `#[derive(Token)]` for fixed-spelling unit enums.
 - `stan-language`: language elements, lossless lexing, distributions, function metadata, and 2.39 signatures.
 - `stan-language-server`: a stdio LSP server with full document synchronization and lexical diagnostics.
+- `stan-tools`: `stanfmt` and `stanlint` command-line tools.
 - `xtask`: deterministic catalog refresh and drift checking.
 
 The workspace uses Rust edition 2024 and declares Rust 1.85 as its minimum
@@ -31,6 +34,18 @@ Run the server over stdio with:
 ```text
 cargo run -p stan-language-server
 ```
+
+Format or check models with:
+
+```text
+cargo run -p stan-tools --bin stanfmt -- model.stan
+cargo run -p stan-tools --bin stanfmt -- --check model.stan
+cargo run -p stan-tools --bin stanlint -- model.stan
+```
+
+The VS Code client is under `editors/vscode`. See
+[architecture](docs/architecture.md), [configuration](docs/configuration.md), and
+[diagnostic codes](docs/diagnostics.md) for the extension contracts.
 
 ## Refresh the Stan catalog
 

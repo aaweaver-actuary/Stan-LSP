@@ -1,0 +1,82 @@
+{
+  "name": "stan-lsp",
+  "displayName": "Stan Language Server",
+  "description": "Language intelligence, formatting, and linting for Stan models.",
+  "version": "0.2.0",
+  "publisher": "stan-lsp",
+  "license": "MIT OR Apache-2.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Linters", "Formatters"],
+  "activationEvents": ["onLanguage:stan"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "stan",
+      "aliases": ["Stan", "stan"],
+      "extensions": [".stan"],
+      "configuration": "./language-configuration.json"
+    }],
+    "configuration": {
+      "title": "Stan LSP",
+      "properties": {
+        "stanLsp.serverPath": {
+          "type": "string",
+          "default": "stan-language-server",
+          "description": "Path to the stan-language-server executable."
+        },
+        "stanLsp.stancPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to stanc3. When empty, STANC and PATH are used."
+        },
+        "stanLsp.stanVersion": {
+          "type": "string",
+          "default": "2.39.0",
+          "description": "Embedded Stan catalog version."
+        },
+        "stanLsp.includePaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional directories searched for #include files."
+        },
+        "stanLsp.compilerOnSave": {
+          "type": "boolean",
+          "default": true
+        },
+        "stanLsp.compilerOnChange": {
+          "type": "boolean",
+          "default": false
+        },
+        "stanLsp.compilerDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0
+        },
+        "stanLsp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off"
+        }
+      }
+    },
+    "commands": [
+      { "command": "stanLsp.restart", "title": "Stan: Restart Language Server" },
+      { "command": "stanLsp.format", "title": "Stan: Format Document" },
+      { "command": "stanLsp.configureStanc", "title": "Stan: Configure stanc Path" },
+      { "command": "stanLsp.locateStanc", "title": "Stan: Locate stanc Executable" },
+      { "command": "stanLsp.workspaceDiagnostics", "title": "Stan: Validate Workspace" },
+      { "command": "stanLsp.explainDiagnostic", "title": "Stan: Explain Diagnostic" }
+    ]
+  },
+  "scripts": {
+    "test": "node --check extension.js && node --test test/manifest.test.js",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2"
+  }
+}

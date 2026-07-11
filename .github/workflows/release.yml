@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }} -p stan-language-server -p stan-tools
+      - name: Package Unix binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/stan-language-server dist/
+          cp target/${{ matrix.target }}/release/stanfmt dist/
+          cp target/${{ matrix.target }}/release/stanlint dist/
+          tar -C dist -czf stan-tools-${{ matrix.target }}.tar.gz .
+          shasum -a 256 stan-tools-${{ matrix.target }}.tar.gz > stan-tools-${{ matrix.target }}.tar.gz.sha256
+      - name: Package Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist
+          Copy-Item target/${{ matrix.target }}/release/stan-language-server.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/stanfmt.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/stanlint.exe dist/
+          Compress-Archive dist/* stan-tools-${{ matrix.target }}.zip
+          (Get-FileHash stan-tools-${{ matrix.target }}.zip -Algorithm SHA256).Hash | Out-File stan-tools-${{ matrix.target }}.zip.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            stan-tools-*.tar.gz
+            stan-tools-*.tar.gz.sha256
+            stan-tools-*.zip
+            stan-tools-*.zip.sha256
+
+  vscode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: editors/vscode
+        run: npm install
+      - working-directory: editors/vscode
+        run: npm run package
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: editors/vscode/*.vsix

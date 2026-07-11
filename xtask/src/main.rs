@@ -220,9 +220,14 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    if args.next().as_deref() != Some("refresh-stan") {
+    let command = args.next();
+    if command.as_deref() == Some("validate") {
+        return validate_catalog();
+    }
+    if command.as_deref() != Some("refresh-stan") {
         return Err(
-            "usage: cargo run -p xtask -- refresh-stan --stanc <path> [--check]".to_owned(),
+            "usage: cargo run -p xtask -- validate | refresh-stan --stanc <path> [--check]"
+                .to_owned(),
         );
     }
 
@@ -237,6 +242,29 @@ fn run() -> Result<(), String> {
     }
     let stanc = stanc.ok_or_else(|| "--stanc <path> is required".to_owned())?;
     refresh(&stanc, check)
+}
+
+fn validate_catalog() -> Result<(), String> {
+    let catalog = stan_language::FunctionCatalog::global();
+    for function in stan_language::StanFunction::ALL {
+        let metadata = catalog.metadata(*function);
+        if metadata.categories.is_empty() {
+            return Err(format!("{function} has no category"));
+        }
+        if metadata
+            .lifecycle
+            .is_available_in(stan_language::STAN_VERSION)
+            && catalog.signatures(*function).is_empty()
+        {
+            return Err(format!("{function} has no signature"));
+        }
+    }
+    println!(
+        "validated {} Stan {} built-in functions",
+        stan_language::StanFunction::ALL.len(),
+        stan_language::STAN_VERSION
+    );
+    Ok(())
 }
 
 fn refresh(stanc: &Path, check: bool) -> Result<(), String> {
@@ -376,8 +404,30 @@ fn render_functions(
         )
         .unwrap();
     }
+    output.push_str("        }\n    }\n\n    pub const fn declared_call_contexts(&self) -> CallContextSet {\n        match self {\n");
+    for name in by_name.keys() {
+        writeln!(
+            output,
+            "            Self::{} => {},",
+            rust_variant(name),
+            call_context_expression(name),
+        )
+        .unwrap();
+    }
     output.push_str("        }\n    }\n}\n");
     Ok(output)
+}
+
+fn call_context_expression(name: &str) -> &'static str {
+    if name.ends_with("_rng") {
+        "CallContextSet::TRANSFORMED_DATA.union(CallContextSet::GENERATED_QUANTITIES).union(CallContextSet::RNG_FUNCTION)"
+    } else if name.ends_with("_jacobian") {
+        "CallContextSet::TRANSFORMED_PARAMETERS.union(CallContextSet::JACOBIAN_FUNCTION)"
+    } else if name.ends_with("_lupdf") || name.ends_with("_lupmf") {
+        "CallContextSet::MODEL.union(CallContextSet::LOG_PROBABILITY_FUNCTION)"
+    } else {
+        "CallContextSet::ANY"
+    }
 }
 
 fn categories_for(name: &str, signatures: &[String]) -> Vec<&'static str> {

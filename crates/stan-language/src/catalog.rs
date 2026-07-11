@@ -45,6 +45,14 @@ pub struct FunctionCatalog {
 }
 
 impl FunctionCatalog {
+    pub fn for_version(version: crate::StanVersion) -> Option<&'static Self> {
+        (version == crate::STAN_VERSION).then(Self::global)
+    }
+
+    pub const fn supported_versions() -> &'static [crate::StanVersion] {
+        &[crate::STAN_VERSION]
+    }
+
     pub fn global() -> &'static Self {
         static CATALOG: OnceLock<FunctionCatalog> = OnceLock::new();
         CATALOG.get_or_init(|| {
@@ -183,20 +191,8 @@ impl StanFunction {
 }
 
 fn infer_metadata(function: StanFunction) -> FunctionMetadata {
-    let name = function.as_str();
     let categories = function.declared_categories().iter().copied().collect();
-
-    let call_contexts = if name.ends_with("_rng") {
-        CallContextSet::TRANSFORMED_DATA
-            .union(CallContextSet::GENERATED_QUANTITIES)
-            .union(CallContextSet::RNG_FUNCTION)
-    } else if name.ends_with("_jacobian") {
-        CallContextSet::TRANSFORMED_PARAMETERS.union(CallContextSet::JACOBIAN_FUNCTION)
-    } else if name.ends_with("_lupdf") || name.ends_with("_lupmf") {
-        CallContextSet::MODEL.union(CallContextSet::LOG_PROBABILITY_FUNCTION)
-    } else {
-        CallContextSet::ANY
-    };
+    let call_contexts = function.declared_call_contexts();
 
     let lifecycle = function.declared_lifecycle();
     FunctionMetadata {
