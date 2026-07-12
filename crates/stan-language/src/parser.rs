@@ -678,10 +678,7 @@ impl ExpressionParser<'_> {
             _ => return Err(token.range),
         }
 
-        loop {
-            let Some(next) = self.peek() else {
-                break;
-            };
+        while let Some(next) = self.peek() {
             match next.kind {
                 SyntaxKind::Symbol(Symbol::LeftParen) => {
                     self.bump();
