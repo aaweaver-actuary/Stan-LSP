@@ -37,3 +37,10 @@ jobs:
           chmod +x "$binary"
           echo "STANC=$binary" >> "$GITHUB_ENV"
       - run: cargo run -p xtask -- refresh-stan --stanc "$STANC" --check
+      - run: cargo run -p xtask -- corpus fetch
+      - run: cargo run -p xtask -- corpus check --external --stanc "$STANC" --json corpus-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stan-corpus-report
+          path: corpus-report.json

@@ -5,7 +5,7 @@ use std::{
     process::ExitCode,
 };
 
-use stan_language::{FormatterConfig, analyze, format};
+use stan_language::{FormatterConfig, Revision, analyze_revision, format};
 
 fn main() -> ExitCode {
     match run() {
@@ -48,7 +48,7 @@ fn run() -> Result<bool, String> {
         io::stdin()
             .read_to_string(&mut source)
             .map_err(|error| error.to_string())?;
-        let formatted = format(&analyze(&source), &config)
+        let formatted = format(&analyze_revision(&source, Revision::default()), &config)
             .map_err(|error| format!("{}: {error}", stdin_path.as_deref().unwrap_or("stdin")))?;
         if check {
             return Ok(formatted != source);
@@ -61,7 +61,7 @@ fn run() -> Result<bool, String> {
     for path in files {
         let source =
             fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let formatted = format(&analyze(&source), &config)
+        let formatted = format(&analyze_revision(&source, Revision::default()), &config)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         if formatted != source {
             changed = true;

@@ -1,3 +1,10 @@
+//! Versions, lifecycle, categories, and legal call contexts for built-ins.
+
+#![allow(
+    missing_docs,
+    reason = "exhaustive catalog metadata variants are documented as groups in the module and generated reference documentation"
+)]
+
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};

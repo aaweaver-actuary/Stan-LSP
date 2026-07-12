@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use stan_language::Revision;
 use stan_language_server::document::{Document, DocumentStore};
 use stan_language_server::features;
 use stan_language_server::stanc::StancRunner;
@@ -26,9 +27,9 @@ use tower_lsp_server::ls_types::{
     DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
     FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
-    InlayHintParams, Location, OneOf, PositionEncodingKind, ReferenceParams, RenameParams,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    InlayHintParams, Location, OneOf, Position, PositionEncodingKind, ReferenceParams,
+    RenameParams, SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, SymbolInformation, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
@@ -55,6 +56,13 @@ struct Metrics {
     analysis_runs: AtomicU64,
     compiler_runs: AtomicU64,
     compiler_cancellations: AtomicU64,
+}
+
+fn document_offset(document: &Document, position: Position) -> Option<usize> {
+    stan_language_server::mapper::LspMapper::for_document(document)
+        .to_offset(position)
+        .ok()
+        .map(|offset| offset as usize)
 }
 
 impl Backend {
@@ -87,7 +95,7 @@ impl Backend {
                 .into_iter()
                 .find(|cycle| cycle.iter().any(|entry| entry == path.as_ref()))
             {
-                include_diagnostics.push(stan_language::Diagnostic::error(
+                let mut diagnostic = stan_language::Diagnostic::error(
                     "workspace.include-cycle",
                     format!(
                         "include cycle: {}",
@@ -98,7 +106,9 @@ impl Backend {
                             .join(" -> ")
                     ),
                     stan_language::TextRange::new(0, 0),
-                ));
+                );
+                diagnostic.source = stan_language::DiagnosticSource::Workspace;
+                include_diagnostics.push(diagnostic);
             }
             published.extend(include_diagnostics.into_iter().filter_map(|diagnostic| {
                 stan_language_server::diagnostics::to_lsp(document, diagnostic)
@@ -477,10 +487,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(features::hover(&document, offset))
@@ -514,10 +521,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(Some(features::completion(&document, offset)))
@@ -528,10 +532,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(features::signature_help(&document, offset))
@@ -545,10 +546,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(features::goto_definition(&document, offset))
@@ -562,10 +560,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&position.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, position.position)
-        else {
+        let Some(offset) = document_offset(&document, position.position) else {
             return Ok(None);
         };
         Ok(features::references(
@@ -583,10 +578,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(features::highlights(&document, offset))
@@ -597,10 +589,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&position.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, position.position)
-        else {
+        let Some(offset) = document_offset(&document, position.position) else {
             return Ok(None);
         };
         Ok(features::rename(&document, offset, &params.new_name))
@@ -629,7 +618,7 @@ impl LanguageServer for Backend {
             let Some(uri) = tower_lsp_server::ls_types::Uri::from_file_path(&file.path) else {
                 continue;
             };
-            let analysis = stan_language::analyze(&file.text);
+            let analysis = stan_language::analyze_revision(&file.text, Revision::default());
             let index = stan_language_server::line_index::LineIndex::new(&file.text);
             for symbol in analysis
                 .semantics
@@ -637,13 +626,8 @@ impl LanguageServer for Backend {
                 .iter()
                 .filter(|symbol| symbol.name.to_lowercase().contains(&query))
             {
-                let Ok(start) =
-                    index.offset_to_position(&file.text, symbol.name_range.start as usize)
-                else {
-                    continue;
-                };
-                let Ok(end) = index.offset_to_position(&file.text, symbol.name_range.end as usize)
-                else {
+                let mapper = stan_language_server::mapper::LspMapper::new(&file.text, &index);
+                let Ok(range) = mapper.to_range(symbol.name_range) else {
                     continue;
                 };
                 #[allow(deprecated)]
@@ -655,10 +639,7 @@ impl LanguageServer for Backend {
                     },
                     tags: None,
                     deprecated: None,
-                    location: Location::new(
-                        uri.clone(),
-                        tower_lsp_server::ls_types::Range::new(start, end),
-                    ),
+                    location: Location::new(uri.clone(), range),
                     container_name: None,
                 });
             }
@@ -674,10 +655,7 @@ impl LanguageServer for Backend {
         let Some(document) = self.document(&params.text_document.uri).await else {
             return Ok(None);
         };
-        let Ok(offset) = document
-            .line_index
-            .position_to_offset(&document.text, params.position)
-        else {
+        let Some(offset) = document_offset(&document, params.position) else {
             return Ok(None);
         };
         Ok(features::prepare_call_hierarchy(&document, offset))

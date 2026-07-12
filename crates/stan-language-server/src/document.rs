@@ -1,3 +1,5 @@
+//! Versioned open-document state and cached immutable analysis snapshots.
+
 use std::collections::HashMap;
 
 use stan_language::{AnalysisSnapshot, Revision, analyze_revision, fallback_analysis};
@@ -7,15 +9,22 @@ use tower_lsp_server::ls_types::Uri;
 use crate::line_index::LineIndex;
 
 #[derive(Debug, Clone)]
+/// One accepted open-document revision and its shared analysis.
 pub struct Document {
+    /// Canonical LSP document URI.
     pub uri: Uri,
+    /// Latest accepted client version.
     pub version: i32,
+    /// Complete UTF-8 source text.
     pub text: String,
+    /// Cached UTF-16 conversion index.
     pub line_index: LineIndex,
+    /// Analysis computed exactly once for this revision.
     pub analysis: Arc<AnalysisSnapshot>,
 }
 
 impl Document {
+    /// Creates and fully analyzes one document revision, isolating internal panics.
     pub fn new(uri: Uri, version: i32, text: String) -> Self {
         let line_index = LineIndex::new(&text);
         let revision = Revision(version.max(0) as u64);
@@ -39,15 +48,20 @@ impl Document {
 }
 
 #[derive(Debug, Default)]
+/// URI-keyed store that rejects stale full-document updates.
 pub struct DocumentStore {
     documents: HashMap<Uri, Document>,
 }
 
 impl DocumentStore {
+    /// Inserts or replaces an open document.
     pub fn open(&mut self, document: Document) {
         self.documents.insert(document.uri.clone(), document);
     }
 
+    /// Accepts a strictly newer full-document version.
+    ///
+    /// Returns `None` for unknown documents and stale versions.
     pub fn replace(&mut self, uri: &Uri, version: i32, text: String) -> Option<&Document> {
         let document = self.documents.get_mut(uri)?;
         if version <= document.version {
@@ -57,10 +71,12 @@ impl DocumentStore {
         Some(document)
     }
 
+    /// Removes and returns a closed document.
     pub fn close(&mut self, uri: &Uri) -> Option<Document> {
         self.documents.remove(uri)
     }
 
+    /// Returns the latest accepted document revision.
     pub fn get(&self, uri: &Uri) -> Option<&Document> {
         self.documents.get(uri)
     }

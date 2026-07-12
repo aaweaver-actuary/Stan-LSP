@@ -2,7 +2,7 @@
   "name": "stan-lsp",
   "displayName": "Stan Language Server",
   "description": "Language intelligence, formatting, and linting for Stan models.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "stan-lsp",
   "license": "MIT OR Apache-2.0",
   "engines": { "vscode": "^1.85.0" },

@@ -4,6 +4,10 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Instant;
+
+use serde::Serialize;
+use stan_language::Revision;
 
 const VERSION: &str = "2.39.0";
 
@@ -224,9 +228,12 @@ fn run() -> Result<(), String> {
     if command.as_deref() == Some("validate") {
         return validate_catalog();
     }
+    if command.as_deref() == Some("corpus") {
+        return corpus_command(args.collect());
+    }
     if command.as_deref() != Some("refresh-stan") {
         return Err(
-            "usage: cargo run -p xtask -- validate | refresh-stan --stanc <path> [--check]"
+            "usage: cargo run -p xtask -- validate | refresh-stan --stanc <path> [--check] | corpus <fetch|check> [--external] [--stanc <path>] [--json <path>]"
                 .to_owned(),
         );
     }
@@ -242,6 +249,314 @@ fn run() -> Result<(), String> {
     }
     let stanc = stanc.ok_or_else(|| "--stanc <path> is required".to_owned())?;
     refresh(&stanc, check)
+}
+
+#[derive(Debug, Default, Serialize)]
+struct CorpusReport {
+    models_analyzed: usize,
+    parser_or_analysis_panics: usize,
+    formatter_panics: usize,
+    semantic_invariant_failures: usize,
+    invalid_ranges: usize,
+    formatter_errors: usize,
+    formatter_non_idempotence: usize,
+    stanc_valid_models: usize,
+    formatted_stanc_failures: usize,
+    default_local_errors_on_stanc_valid_models: usize,
+    elapsed_milliseconds: u128,
+    failures: Vec<String>,
+}
+
+fn corpus_command(arguments: Vec<String>) -> Result<(), String> {
+    let Some(action) = arguments.first().map(String::as_str) else {
+        return Err("corpus requires `fetch` or `check`".to_owned());
+    };
+    let root = workspace_root()?;
+    if action == "fetch" {
+        return fetch_corpus(&root);
+    }
+    if action != "check" {
+        return Err(format!("unknown corpus action {action:?}"));
+    }
+    let mut external = false;
+    let mut stanc = None;
+    let mut json_path = None;
+    let mut cursor = 1usize;
+    while cursor < arguments.len() {
+        match arguments[cursor].as_str() {
+            "--external" => external = true,
+            "--stanc" => {
+                cursor += 1;
+                stanc = arguments.get(cursor).map(PathBuf::from);
+                if stanc.is_none() {
+                    return Err("--stanc requires a path".to_owned());
+                }
+            }
+            "--json" => {
+                cursor += 1;
+                json_path = arguments.get(cursor).map(PathBuf::from);
+                if json_path.is_none() {
+                    return Err("--json requires a path".to_owned());
+                }
+            }
+            other => return Err(format!("unknown corpus argument {other:?}")),
+        }
+        cursor += 1;
+    }
+    let report = check_corpus(&root, external, stanc.as_deref())?;
+    let rendered = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("failed to serialize corpus report: {error}"))?;
+    if let Some(path) = json_path {
+        fs::write(&path, &rendered)
+            .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    }
+    println!("{rendered}");
+    if report.parser_or_analysis_panics > 0
+        || report.formatter_panics > 0
+        || report.semantic_invariant_failures > 0
+        || report.invalid_ranges > 0
+        || report.formatter_non_idempotence > 0
+        || report.formatted_stanc_failures > 0
+        || report.default_local_errors_on_stanc_valid_models > 0
+    {
+        return Err("corpus beta gate failed".to_owned());
+    }
+    Ok(())
+}
+
+fn workspace_root() -> Result<PathBuf, String> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "xtask has no workspace parent".to_owned())
+}
+
+fn fetch_corpus(root: &Path) -> Result<(), String> {
+    let manifest_path = root.join("corpus/manifest.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?;
+    let url = manifest_value(&manifest, "archive_url")?;
+    let expected = manifest_value(&manifest, "sha256")?;
+    let cache = root.join("target/corpus");
+    fs::create_dir_all(&cache)
+        .map_err(|error| format!("failed to create {}: {error}", cache.display()))?;
+    let archive = cache.join("external.tar.gz");
+    run_status(
+        Command::new("curl")
+            .args([
+                "--fail",
+                "--location",
+                "--silent",
+                "--show-error",
+                "--output",
+            ])
+            .arg(&archive)
+            .arg(url),
+    )?;
+    let actual = checksum(&archive)?;
+    if actual != expected {
+        return Err(format!(
+            "external corpus checksum mismatch: expected {expected}, got {actual}"
+        ));
+    }
+    let external = cache.join("external");
+    if external.exists() {
+        fs::remove_dir_all(&external)
+            .map_err(|error| format!("failed to clear {}: {error}", external.display()))?;
+    }
+    fs::create_dir_all(&external)
+        .map_err(|error| format!("failed to create {}: {error}", external.display()))?;
+    run_status(
+        Command::new("tar")
+            .args(["-xzf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&external),
+    )?;
+    println!("fetched pinned external corpus into {}", external.display());
+    Ok(())
+}
+
+fn manifest_value<'a>(manifest: &'a str, key: &str) -> Result<&'a str, String> {
+    manifest
+        .lines()
+        .find_map(|line| {
+            let (candidate, value) = line.split_once('=')?;
+            (candidate.trim() == key).then(|| value.trim().trim_matches('"'))
+        })
+        .ok_or_else(|| format!("corpus manifest has no {key:?}"))
+}
+
+fn checksum(path: &Path) -> Result<String, String> {
+    let output = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .or_else(|_| {
+            Command::new("shasum")
+                .args(["-a", "256"])
+                .arg(path)
+                .output()
+        })
+        .map_err(|error| format!("failed to run SHA-256 tool: {error}"))?;
+    if !output.status.success() {
+        return Err("SHA-256 tool failed".to_owned());
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+        .ok_or_else(|| "SHA-256 tool returned no digest".to_owned())
+}
+
+fn check_corpus(root: &Path, external: bool, stanc: Option<&Path>) -> Result<CorpusReport, String> {
+    let started = Instant::now();
+    let mut paths = stan_files(&root.join("corpus/smoke"))?;
+    if external {
+        let external_root = root.join("target/corpus/external");
+        if !external_root.exists() {
+            return Err("external corpus is missing; run `xtask corpus fetch`".to_owned());
+        }
+        paths.extend(stan_files(&external_root)?);
+    }
+    paths.sort();
+    paths.dedup();
+    let mut report = CorpusReport::default();
+    for path in paths {
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        report.models_analyzed += 1;
+        let analysis = match std::panic::catch_unwind(|| {
+            stan_language::analyze_revision(&source, Revision::default())
+        }) {
+            Ok(analysis) => analysis,
+            Err(_) => {
+                report.parser_or_analysis_panics += 1;
+                report
+                    .failures
+                    .push(format!("analysis panic: {}", path.display()));
+                continue;
+            }
+        };
+        if analysis.syntax.reconstruct() != source
+            || analysis.tokens.iter().any(|token| {
+                token.range.start > token.range.end || token.range.end as usize > source.len()
+            })
+            || analysis.diagnostics.iter().any(|diagnostic| {
+                diagnostic.primary_range.start > diagnostic.primary_range.end
+                    || diagnostic.primary_range.end as usize > source.len()
+            })
+        {
+            report.invalid_ranges += 1;
+            report.failures.push(format!(
+                "invalid range or reconstruction: {}",
+                path.display()
+            ));
+        }
+        #[cfg(debug_assertions)]
+        if let Err(error) = analysis.semantics.validate() {
+            report.semantic_invariant_failures += 1;
+            report
+                .failures
+                .push(format!("semantic invariant {error:?}: {}", path.display()));
+        }
+        let formatted = match std::panic::catch_unwind(|| {
+            stan_language::format(&analysis, &stan_language::FormatterConfig::default())
+        }) {
+            Ok(Ok(formatted)) => Some(formatted),
+            Ok(Err(_)) => {
+                report.formatter_errors += 1;
+                None
+            }
+            Err(_) => {
+                report.formatter_panics += 1;
+                report
+                    .failures
+                    .push(format!("formatter panic: {}", path.display()));
+                None
+            }
+        };
+        if let Some(formatted) = &formatted {
+            match stan_language::format(
+                &stan_language::analyze_revision(formatted, Revision::default()),
+                &stan_language::FormatterConfig::default(),
+            ) {
+                Ok(second) if second == *formatted => {}
+                _ => {
+                    report.formatter_non_idempotence += 1;
+                    report
+                        .failures
+                        .push(format!("formatter non-idempotence: {}", path.display()));
+                }
+            }
+        }
+        if let Some(stanc) = stanc {
+            if compiler_accepts(stanc, &path) {
+                report.stanc_valid_models += 1;
+                let local_errors = analysis
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .chain(stan_language::lint(
+                        &analysis,
+                        &stan_language::LintConfig::default(),
+                    ))
+                    .filter(|diagnostic| diagnostic.severity == stan_language::Severity::Error)
+                    .count();
+                report.default_local_errors_on_stanc_valid_models += local_errors;
+                if let Some(formatted) = formatted {
+                    let temp = root.join("target/corpus/formatted.stan");
+                    fs::write(&temp, formatted)
+                        .map_err(|error| format!("failed to write {}: {error}", temp.display()))?;
+                    if !compiler_accepts(stanc, &temp) {
+                        report.formatted_stanc_failures += 1;
+                        report
+                            .failures
+                            .push(format!("formatted source rejected: {}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    report.elapsed_milliseconds = started.elapsed().as_millis();
+    Ok(report)
+}
+
+fn stan_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    if !root.exists() {
+        return Ok(files);
+    }
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("failed to read {}: {error}", directory.display()))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("stan") {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn compiler_accepts(stanc: &Path, source: &Path) -> bool {
+    Command::new(stanc)
+        .arg(source)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn run_status(command: &mut Command) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|error| format!("failed to run {command:?}: {error}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("{command:?} failed with {status}"))
 }
 
 fn validate_catalog() -> Result<(), String> {

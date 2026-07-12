@@ -8,6 +8,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Configurable emission level for one lint rule.
+#[allow(
+    missing_docs,
+    reason = "variants define the complete documented lint-level scale"
+)]
 pub enum LintLevel {
     Allow,
     Hint,
@@ -16,6 +21,8 @@ pub enum LintLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// User-facing family of related lint rules.
+#[allow(missing_docs, reason = "variants are the documented lint groups")]
 pub enum LintGroup {
     Correctness,
     Suspicious,
@@ -25,75 +32,111 @@ pub enum LintGroup {
     Bayesian,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LintDescriptor {
-    pub id: &'static str,
-    pub group: LintGroup,
-    pub default_level: LintLevel,
-    pub description: &'static str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Compatibility promise attached to a published lint ID.
+#[allow(missing_docs, reason = "variants define the complete stability scale")]
+pub enum LintStability {
+    Stable,
+    Experimental,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Registry metadata for one configurable lint.
+pub struct LintDescriptor {
+    /// Stable configuration and diagnostic ID.
+    pub id: &'static str,
+    /// Rule family.
+    pub group: LintGroup,
+    /// Level used when configuration has no override.
+    pub default_level: LintLevel,
+    /// Concise user-facing explanation.
+    pub description: &'static str,
+    /// Published compatibility classification.
+    pub stability: LintStability,
+}
+
+/// Warns about legacy or removed language elements.
 pub const DEPRECATED_LANGUAGE_ELEMENT: LintDescriptor = LintDescriptor {
     id: "deprecated.language-element",
     group: LintGroup::Deprecated,
     default_level: LintLevel::Warn,
     description: "use of syntax removed or deprecated by the selected Stan version",
+    stability: LintStability::Stable,
 };
+/// Reports references not covered by the conservative local resolver.
 pub const UNRESOLVED_IDENTIFIER: LintDescriptor = LintDescriptor {
     id: "correctness.unresolved-identifier",
     group: LintGroup::Correctness,
-    default_level: LintLevel::Deny,
+    default_level: LintLevel::Hint,
     description: "reference does not resolve to a declaration or built-in",
+    stability: LintStability::Experimental,
 };
+/// Reports declarations without resolved references.
 pub const UNUSED_DECLARATION: LintDescriptor = LintDescriptor {
     id: "suspicious.unused-declaration",
     group: LintGroup::Suspicious,
-    default_level: LintLevel::Warn,
+    default_level: LintLevel::Hint,
     description: "declaration is never referenced",
+    stability: LintStability::Experimental,
 };
+/// Reports cataloged functions outside a known legal context.
 pub const ILLEGAL_CALL_CONTEXT: LintDescriptor = LintDescriptor {
     id: "correctness.illegal-call-context",
     group: LintGroup::Correctness,
-    default_level: LintLevel::Deny,
+    default_level: LintLevel::Hint,
     description: "built-in function is not legal in this Stan context",
+    stability: LintStability::Experimental,
 };
+/// Reports complete calls whose arity matches no concrete overload.
 pub const ARGUMENT_COUNT: LintDescriptor = LintDescriptor {
     id: "correctness.argument-count",
     group: LintGroup::Correctness,
     default_level: LintLevel::Deny,
     description: "call argument count matches no known overload",
+    stability: LintStability::Stable,
 };
+/// Reports complete calls whose fully known argument types match no overload.
 pub const ARGUMENT_TYPE: LintDescriptor = LintDescriptor {
     id: "correctness.argument-type",
     group: LintGroup::Correctness,
-    default_level: LintLevel::Deny,
+    default_level: LintLevel::Hint,
     description: "call arguments match no known overload when their types are known",
+    stability: LintStability::Experimental,
 };
+/// Reports complete sampling statements without a built-in or user distribution.
 pub const UNKNOWN_DISTRIBUTION: LintDescriptor = LintDescriptor {
     id: "correctness.unknown-distribution",
     group: LintGroup::Correctness,
-    default_level: LintLevel::Deny,
+    default_level: LintLevel::Hint,
     description: "sampling statement names no known distribution",
+    stability: LintStability::Experimental,
 };
+/// Hints when selected expensive operations occur inside a loop.
 pub const REPEATED_EXPENSIVE_OPERATION: LintDescriptor = LintDescriptor {
     id: "performance.repeated-expensive-operation",
     group: LintGroup::Performance,
-    default_level: LintLevel::Warn,
+    default_level: LintLevel::Hint,
     description: "expensive matrix operation is repeated inside a loop",
+    stability: LintStability::Experimental,
 };
+/// Hints when a sampling loop may have a vectorized representation.
 pub const VECTORIZATION_OPPORTUNITY: LintDescriptor = LintDescriptor {
     id: "performance.vectorization-opportunity",
     group: LintGroup::Performance,
     default_level: LintLevel::Hint,
     description: "sampling loop may admit a vectorized form",
+    stability: LintStability::Experimental,
 };
+/// Opt-in heuristic for parameters without an apparent prior contribution.
 pub const PARAMETER_WITHOUT_PRIOR: LintDescriptor = LintDescriptor {
     id: "bayesian.parameter-without-apparent-prior",
     group: LintGroup::Bayesian,
     default_level: LintLevel::Allow,
     description: "parameter has no apparent sampling contribution",
+    stability: LintStability::Experimental,
 };
 
+/// Declaration-ordered registry of every configurable lint.
 pub const ALL_LINTS: &[LintDescriptor] = &[
     DEPRECATED_LANGUAGE_ELEMENT,
     UNRESOLVED_IDENTIFIER,
@@ -106,18 +149,22 @@ pub const ALL_LINTS: &[LintDescriptor] = &[
     VECTORIZATION_OPPORTUNITY,
     PARAMETER_WITHOUT_PRIOR,
 ];
+/// Compatibility alias for [`ALL_LINTS`].
 pub const REGISTRY: &[LintDescriptor] = ALL_LINTS;
 
 #[derive(Debug, Clone, Default)]
+/// Per-rule lint level overrides shared by LSP and `stanlint`.
 pub struct LintConfig {
     levels: BTreeMap<&'static str, LintLevel>,
 }
 
 impl LintConfig {
+    /// Overrides a registry lint by its static ID.
     pub fn set(&mut self, id: &'static str, level: LintLevel) {
         self.levels.insert(id, level);
     }
 
+    /// Returns the effective level for `descriptor`.
     pub fn level(&self, descriptor: LintDescriptor) -> LintLevel {
         self.levels
             .get(descriptor.id)
@@ -125,6 +172,11 @@ impl LintConfig {
             .unwrap_or(descriptor.default_level)
     }
 
+    /// Overrides a lint by a runtime ID after validating it against the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `id` is not published.
     pub fn set_named(&mut self, id: &str, level: LintLevel) -> Result<(), String> {
         let descriptor = ALL_LINTS
             .iter()
@@ -134,6 +186,21 @@ impl LintConfig {
         Ok(())
     }
 
+    /// Parses strict `stanlint.toml` rule assignments.
+    ///
+    /// # Errors
+    ///
+    /// Returns the offending line, lint ID, or level.
+    ///
+    /// ```
+    /// let config = stan_language::LintConfig::from_toml(
+    ///     "correctness.unresolved-identifier = \"allow\"",
+    /// ).unwrap();
+    /// assert_eq!(
+    ///     config.level(stan_language::UNRESOLVED_IDENTIFIER),
+    ///     stan_language::LintLevel::Allow,
+    /// );
+    /// ```
     pub fn from_toml(input: &str) -> Result<Self, String> {
         let mut config = Self::default();
         for (line_number, raw) in input.lines().enumerate() {
@@ -162,6 +229,7 @@ impl LintConfig {
     }
 }
 
+/// Runs every enabled lint against one immutable analysis snapshot.
 pub fn lint(snapshot: &AnalysisSnapshot, config: &LintConfig) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     emit_deprecated(snapshot, config, &mut diagnostics);
@@ -278,12 +346,9 @@ fn emit_illegal_context(
         return;
     }
     let text = snapshot.syntax.text();
-    for node in snapshot
-        .syntax
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == SyntaxNodeKind::FunctionCall)
-    {
+    for node in snapshot.syntax.nodes().iter().filter(|node| {
+        node.kind == SyntaxNodeKind::FunctionCall && complete_call(snapshot, node.range)
+    }) {
         let Some(token) = snapshot.tokens.get(node.token_range.start) else {
             continue;
         };
@@ -358,12 +423,9 @@ fn emit_argument_count(
         return;
     }
     let text = snapshot.syntax.text();
-    for node in snapshot
-        .syntax
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == SyntaxNodeKind::FunctionCall)
-    {
+    for node in snapshot.syntax.nodes().iter().filter(|node| {
+        node.kind == SyntaxNodeKind::FunctionCall && complete_call(snapshot, node.range)
+    }) {
         let Some(name_token) = snapshot.tokens.get(node.token_range.start) else {
             continue;
         };
@@ -450,12 +512,9 @@ fn emit_argument_type(
         return;
     }
     let text = snapshot.syntax.text();
-    for node in snapshot
-        .syntax
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == SyntaxNodeKind::FunctionCall)
-    {
+    for node in snapshot.syntax.nodes().iter().filter(|node| {
+        node.kind == SyntaxNodeKind::FunctionCall && complete_call(snapshot, node.range)
+    }) {
         let Some(name_token) = snapshot.tokens.get(node.token_range.start) else {
             continue;
         };
@@ -592,12 +651,9 @@ fn emit_unknown_distribution(
     if level == LintLevel::Allow {
         return;
     }
-    for node in snapshot
-        .syntax
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == SyntaxNodeKind::SamplingStatement)
-    {
+    for node in snapshot.syntax.nodes().iter().filter(|node| {
+        node.kind == SyntaxNodeKind::SamplingStatement && complete_sampling(snapshot, node.range)
+    }) {
         let tokens = &snapshot.tokens[node.token_range.clone()];
         let distribution = tokens
             .iter()
@@ -613,7 +669,13 @@ fn emit_unknown_distribution(
             continue;
         };
         let name = &snapshot.syntax.text()[token.range.start as usize..token.range.end as usize];
-        if crate::Distribution::from_str(name).is_err() {
+        if crate::Distribution::from_str(name).is_err()
+            && snapshot
+                .semantics
+                .probability_functions(name)
+                .next()
+                .is_none()
+        {
             output.push(Diagnostic {
                 code: crate::DiagnosticCode(UNKNOWN_DISTRIBUTION.id),
                 severity: severity(level),
@@ -713,6 +775,24 @@ fn context_at(snapshot: &AnalysisSnapshot, offset: u32) -> Option<CallContext> {
         })
 }
 
+fn complete_call(snapshot: &AnalysisSnapshot, range: crate::TextRange) -> bool {
+    snapshot
+        .syntax
+        .source_file()
+        .call_expressions()
+        .find(|call| call.range() == range)
+        .is_some_and(|call| call.is_complete() && !call.is_declaration())
+}
+
+fn complete_sampling(snapshot: &AnalysisSnapshot, range: crate::TextRange) -> bool {
+    snapshot
+        .syntax
+        .source_file()
+        .sampling_statements()
+        .find(|statement| statement.range() == range)
+        .is_some_and(|statement| statement.is_complete())
+}
+
 fn legacy_fix(element: LegacyLanguageElement, range: crate::TextRange) -> Option<Fix> {
     (element == LegacyLanguageElement::ArrowAssignment).then(|| Fix {
         label: "replace `<-` with `=`".to_owned(),
@@ -736,11 +816,11 @@ fn severity(level: LintLevel) -> Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze;
+    use crate::{Revision, analyze_revision};
 
     #[test]
     fn lint_levels_are_configurable() {
-        let snapshot = analyze("model { increment_log_prob(1); }");
+        let snapshot = analyze_revision("model { increment_log_prob(1); }", Revision::default());
         assert!(
             lint(&snapshot, &LintConfig::default())
                 .iter()
@@ -757,7 +837,10 @@ mod tests {
 
     #[test]
     fn correctness_and_bayesian_lints_are_tiered() {
-        let snapshot = analyze("parameters { real theta; } model { real x; x = missing; }");
+        let snapshot = analyze_revision(
+            "parameters { real theta; } model { real x; x = missing; }",
+            Revision::default(),
+        );
         let diagnostics = lint(&snapshot, &LintConfig::default());
         assert!(
             diagnostics
@@ -779,9 +862,59 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_default_lints_are_hints() {
+        for descriptor in [
+            UNRESOLVED_IDENTIFIER,
+            UNUSED_DECLARATION,
+            ILLEGAL_CALL_CONTEXT,
+            ARGUMENT_TYPE,
+            UNKNOWN_DISTRIBUTION,
+            REPEATED_EXPENSIVE_OPERATION,
+            VECTORIZATION_OPPORTUNITY,
+        ] {
+            assert_eq!(
+                descriptor.default_level,
+                LintLevel::Hint,
+                "{}",
+                descriptor.id
+            );
+            assert_eq!(descriptor.stability, LintStability::Experimental);
+        }
+        assert_eq!(ARGUMENT_COUNT.default_level, LintLevel::Deny);
+        assert_eq!(PARAMETER_WITHOUT_PRIOR.default_level, LintLevel::Allow);
+    }
+
+    #[test]
+    fn incomplete_calls_do_not_produce_semantic_call_diagnostics() {
+        let snapshot = analyze_revision("model { normal(", Revision::default());
+        let diagnostics = lint(&snapshot, &LintConfig::default());
+        for code in [ARGUMENT_COUNT.id, ARGUMENT_TYPE.id, ILLEGAL_CALL_CONTEXT.id] {
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code.0 == code)
+            );
+        }
+    }
+
+    #[test]
+    fn user_defined_distributions_are_not_unknown() {
+        let snapshot = analyze_revision(
+            "functions { real custom_lpdf(real y, real theta) { return normal_lpdf(y | theta, 1); } } data { real y; } parameters { real theta; } model { y ~ custom(theta); }",
+            Revision::default(),
+        );
+        assert!(
+            !lint(&snapshot, &LintConfig::default())
+                .iter()
+                .any(|diagnostic| diagnostic.code.0 == UNKNOWN_DISTRIBUTION.id)
+        );
+    }
+
+    #[test]
     fn source_suppressions_apply_to_the_following_line() {
-        let snapshot = analyze(
+        let snapshot = analyze_revision(
             "model {\n// stanlint: allow correctness.unresolved-identifier\nmissing = 1;\n}",
+            Revision::default(),
         );
         assert!(
             !lint(&snapshot, &LintConfig::default())
@@ -792,7 +925,7 @@ mod tests {
 
     #[test]
     fn certain_argument_count_mismatches_are_reported() {
-        let snapshot = analyze("model { real x; x = exp(1, 2); }");
+        let snapshot = analyze_revision("model { real x; x = exp(1, 2); }", Revision::default());
         assert!(
             lint(&snapshot, &LintConfig::default())
                 .iter()
@@ -802,7 +935,10 @@ mod tests {
 
     #[test]
     fn certain_argument_type_mismatches_are_reported() {
-        let snapshot = analyze("model { real x; x = bernoulli_lpmf(1.2, 0.5); }");
+        let snapshot = analyze_revision(
+            "model { real x; x = bernoulli_lpmf(1.2, 0.5); }",
+            Revision::default(),
+        );
         assert!(
             lint(&snapshot, &LintConfig::default())
                 .iter()
@@ -812,14 +948,20 @@ mod tests {
 
     #[test]
     fn unknown_distributions_and_loop_costs_are_reported() {
-        let unknown = analyze("model { real y; y ~ not_a_distribution(1); }");
+        let unknown = analyze_revision(
+            "model { real y; y ~ not_a_distribution(1); }",
+            Revision::default(),
+        );
         assert!(
             lint(&unknown, &LintConfig::default())
                 .iter()
                 .any(|diagnostic| diagnostic.code.0 == UNKNOWN_DISTRIBUTION.id)
         );
 
-        let looped = analyze("model { matrix[2,2] m; for (n in 1:2) { m = inverse(m); } }");
+        let looped = analyze_revision(
+            "model { matrix[2,2] m; for (n in 1:2) { m = inverse(m); } }",
+            Revision::default(),
+        );
         assert!(
             lint(&looped, &LintConfig::default())
                 .iter()

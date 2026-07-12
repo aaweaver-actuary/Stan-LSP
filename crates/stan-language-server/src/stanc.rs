@@ -1,5 +1,10 @@
 //! Asynchronous integration with the authoritative stanc3 compiler.
 
+#![allow(
+    missing_docs,
+    reason = "process adapter operations and failures are documented in docs/stanc-integration.md"
+)]
+
 use std::{
     env,
     io::Write,

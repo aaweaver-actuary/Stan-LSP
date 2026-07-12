@@ -1,3 +1,22 @@
+//! Protocol-independent implementations of the server's advertised editor features.
+//!
+//! Functions in this module consume one cached [`crate::document::Document`] snapshot. They do not
+//! lex, parse, or own language rules and may be tested without starting stdio LSP.
+
+#![allow(
+    missing_docs,
+    reason = "feature entry points mirror standard LSP operations and are documented by exact protocol tests"
+)]
+
+mod formatting;
+mod navigation;
+
+pub use formatting::{
+    formatting, formatting_with_config, range_formatting, range_formatting_with_config,
+};
+use navigation::symbol_at;
+pub use navigation::{goto_definition, highlights, references, rename};
+
 use std::collections::HashMap;
 
 use stan_language::{
@@ -7,14 +26,14 @@ use stan_language::{
 use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeAction,
     CodeActionKind, CodeActionOrCommand, CodeActionResponse, CompletionItem, CompletionItemKind,
-    CompletionResponse, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, GotoDefinitionResponse, Hover,
-    HoverContents, InlayHint, InlayHintKind, InlayHintLabel, Location, MarkupContent, MarkupKind,
+    CompletionResponse, DocumentSymbol, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
+    Hover, HoverContents, InlayHint, InlayHintKind, InlayHintLabel, MarkupContent, MarkupKind,
     Range, SemanticToken, SemanticTokens, SemanticTokensResult, SignatureHelp,
     SignatureInformation, SymbolKind, TextEdit, WorkspaceEdit,
 };
 
 use crate::document::Document;
+use crate::mapper::LspMapper;
 
 pub fn document_symbols(document: &Document) -> DocumentSymbolResponse {
     let mut symbols = document
@@ -68,58 +87,6 @@ pub fn document_symbols(document: &Document) -> DocumentSymbolResponse {
     DocumentSymbolResponse::Nested(symbols)
 }
 
-pub fn formatting(document: &Document) -> Option<Vec<TextEdit>> {
-    formatting_with_config(document, &stan_language::FormatterConfig::default())
-}
-
-pub fn formatting_with_config(
-    document: &Document,
-    config: &stan_language::FormatterConfig,
-) -> Option<Vec<TextEdit>> {
-    let formatted = stan_language::format(&document.analysis, config).ok()?;
-    if formatted == document.text {
-        return Some(Vec::new());
-    }
-    let range = to_range(
-        document,
-        stan_language::TextRange::new(0, document.text.len()),
-    )?;
-    Some(vec![TextEdit::new(range, formatted)])
-}
-
-pub fn range_formatting(document: &Document, requested: Range) -> Option<Vec<TextEdit>> {
-    range_formatting_with_config(
-        document,
-        requested,
-        &stan_language::FormatterConfig::default(),
-    )
-}
-
-pub fn range_formatting_with_config(
-    document: &Document,
-    requested: Range,
-    config: &stan_language::FormatterConfig,
-) -> Option<Vec<TextEdit>> {
-    let start = document
-        .line_index
-        .position_to_offset(&document.text, requested.start)
-        .ok()?;
-    let end = document
-        .line_index
-        .position_to_offset(&document.text, requested.end)
-        .ok()?;
-    let edit = stan_language::format_range(
-        &document.analysis,
-        config,
-        stan_language::TextRange::new(start, end),
-    )
-    .ok()?;
-    Some(vec![TextEdit::new(
-        to_range(document, edit.range)?,
-        edit.replacement,
-    )])
-}
-
 pub fn completion(document: &Document, offset: usize) -> CompletionResponse {
     let distribution_context = document
         .analysis
@@ -138,7 +105,7 @@ pub fn completion(document: &Document, offset: usize) -> CompletionResponse {
         })
         .is_some_and(|token| token.kind == SyntaxKind::Symbol(stan_language::Symbol::Tilde));
     let mut items: Vec<CompletionItem> = if distribution_context {
-        Distribution::ALL
+        let mut distributions = Distribution::ALL
             .iter()
             .map(|distribution| CompletionItem {
                 label: distribution.as_str().to_owned(),
@@ -146,7 +113,24 @@ pub fn completion(document: &Document, offset: usize) -> CompletionResponse {
                 detail: Some(format!("{:?} distribution", distribution.kind())),
                 ..CompletionItem::default()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        distributions.extend(
+            document
+                .analysis
+                .semantics
+                .user_probability_functions
+                .iter()
+                .map(|function| CompletionItem {
+                    label: function.base_name.clone(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(format!("user-defined {:?} distribution", function.kind)),
+                    sort_text: Some(format!("0-{}", function.base_name)),
+                    ..CompletionItem::default()
+                }),
+        );
+        distributions.sort_by(|left, right| left.label.cmp(&right.label));
+        distributions.dedup_by(|left, right| left.label == right.label);
+        distributions
     } else {
         StanFunction::ALL
             .iter()
@@ -166,88 +150,28 @@ pub fn completion(document: &Document, offset: usize) -> CompletionResponse {
             .collect()
     };
     if !distribution_context {
-        items.extend(document.analysis.semantics.symbols.iter().map(|symbol| {
-            CompletionItem {
-                label: symbol.name.clone(),
-                kind: Some(match symbol.kind {
-                    stan_language::SemanticSymbolKind::Function => CompletionItemKind::FUNCTION,
-                    _ => CompletionItemKind::VARIABLE,
+        items.extend(
+            document
+                .analysis
+                .semantics
+                .visible_symbols_at(offset as u32)
+                .into_iter()
+                .map(|symbol| CompletionItem {
+                    label: symbol.name.clone(),
+                    kind: Some(match symbol.kind {
+                        stan_language::SemanticSymbolKind::Function => CompletionItemKind::FUNCTION,
+                        _ => CompletionItemKind::VARIABLE,
+                    }),
+                    detail: symbol
+                        .declared_type
+                        .as_ref()
+                        .map(|kind| format!("{kind:?}")),
+                    sort_text: Some(format!("0-{}", symbol.name)),
+                    ..CompletionItem::default()
                 }),
-                detail: symbol
-                    .declared_type
-                    .as_ref()
-                    .map(|kind| format!("{kind:?}")),
-                sort_text: Some(format!("0-{}", symbol.name)),
-                ..CompletionItem::default()
-            }
-        }));
+        );
     }
     CompletionResponse::Array(items)
-}
-
-pub fn goto_definition(document: &Document, offset: usize) -> Option<GotoDefinitionResponse> {
-    let symbol = symbol_at(document, offset)?;
-    Some(GotoDefinitionResponse::Scalar(Location::new(
-        document.uri.clone(),
-        to_range(document, symbol.name_range)?,
-    )))
-}
-
-pub fn references(
-    document: &Document,
-    offset: usize,
-    include_declaration: bool,
-) -> Option<Vec<Location>> {
-    let symbol = symbol_at(document, offset)?;
-    let mut locations = Vec::new();
-    if include_declaration {
-        locations.push(Location::new(
-            document.uri.clone(),
-            to_range(document, symbol.name_range)?,
-        ));
-    }
-    locations.extend(
-        document
-            .analysis
-            .semantics
-            .references
-            .iter()
-            .filter(|reference| reference.resolved == Some(symbol.id))
-            .filter_map(|reference| {
-                Some(Location::new(
-                    document.uri.clone(),
-                    to_range(document, reference.range)?,
-                ))
-            }),
-    );
-    Some(locations)
-}
-
-pub fn highlights(document: &Document, offset: usize) -> Option<Vec<DocumentHighlight>> {
-    Some(
-        references(document, offset, true)?
-            .into_iter()
-            .map(|location| DocumentHighlight {
-                range: location.range,
-                kind: Some(DocumentHighlightKind::TEXT),
-            })
-            .collect(),
-    )
-}
-
-pub fn rename(document: &Document, offset: usize, new_name: &str) -> Option<WorkspaceEdit> {
-    if !valid_identifier(new_name) {
-        return None;
-    }
-    let edits = references(document, offset, true)?
-        .into_iter()
-        .map(|location| TextEdit::new(location.range, new_name.to_owned()))
-        .collect();
-    Some(WorkspaceEdit {
-        changes: Some(HashMap::from([(document.uri.clone(), edits)])),
-        document_changes: None,
-        change_annotations: None,
-    })
 }
 
 pub fn code_actions(document: &Document, requested: Range) -> CodeActionResponse {
@@ -339,9 +263,8 @@ pub fn inlay_hints(document: &Document, requested: Range) -> Vec<InlayHint> {
             if parameter.qualifier != stan_language::DataQualifier::DataOnly {
                 continue;
             }
-            let Some(position) = document
-                .line_index
-                .offset_to_position(&document.text, token.range.start as usize)
+            let Some(position) = LspMapper::for_document(document)
+                .to_position(token.range.start)
                 .ok()
             else {
                 continue;
@@ -515,42 +438,6 @@ fn hierarchy_item(
 
 fn overlaps(left: Range, right: Range) -> bool {
     left.start <= right.end && right.start <= left.end
-}
-
-fn symbol_at(document: &Document, offset: usize) -> Option<&stan_language::SemanticSymbol> {
-    document
-        .analysis
-        .semantics
-        .symbols
-        .iter()
-        .find(|symbol| contains(symbol.name_range, offset))
-        .or_else(|| {
-            let reference = document
-                .analysis
-                .semantics
-                .references
-                .iter()
-                .find(|reference| contains(reference.range, offset))?;
-            document
-                .analysis
-                .semantics
-                .symbols
-                .iter()
-                .find(|symbol| Some(symbol.id) == reference.resolved)
-        })
-}
-
-fn contains(range: stan_language::TextRange, offset: usize) -> bool {
-    range.start as usize <= offset && offset < range.end as usize
-}
-
-fn valid_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|character| character == '_' || character.is_alphabetic())
-        && chars.all(|character| character == '_' || character.is_alphanumeric())
-        && stan_language::Keyword::from_str(name).is_err()
 }
 
 pub fn signature_help(document: &Document, offset: usize) -> Option<SignatureHelp> {
@@ -775,26 +662,23 @@ fn semantic_kind(kind: SyntaxKind) -> Option<(u32, u32)> {
 }
 
 fn to_range(document: &Document, range: stan_language::TextRange) -> Option<Range> {
-    Some(Range::new(
-        document
-            .line_index
-            .offset_to_position(&document.text, range.start as usize)
-            .ok()?,
-        document
-            .line_index
-            .offset_to_position(&document.text, range.end as usize)
-            .ok()?,
-    ))
+    LspMapper::for_document(document).to_range(range).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp_server::ls_types::Uri;
+    use tower_lsp_server::ls_types::{GotoDefinitionResponse, Location, Uri};
 
     fn document(source: &str) -> Document {
         let uri: Uri = "file:///model.stan".parse().unwrap();
         Document::new(uri, 1, source.to_owned())
+    }
+
+    fn source_range(document: &Document, start: usize, end: usize) -> Range {
+        LspMapper::for_document(document)
+            .to_range(stan_language::TextRange::new(start, end))
+            .unwrap()
     }
 
     #[test]
@@ -855,5 +739,84 @@ mod tests {
         let outer = prepare_call_hierarchy(&document, source.find("outer").unwrap()).unwrap();
         let outgoing = outgoing_calls(&document, &outer[0]);
         assert!(outgoing.iter().any(|call| call.to.name == "helper"));
+    }
+
+    #[test]
+    fn definition_references_and_parameter_rename_have_exact_ranges() {
+        let source = "functions { real square(real x) { return x * x; } }";
+        let document = document(source);
+        let occurrences = source
+            .match_indices('x')
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(occurrences.len(), 3);
+        let expected_declaration = source_range(&document, occurrences[0], occurrences[0] + 1);
+        assert_eq!(
+            goto_definition(&document, occurrences[1]),
+            Some(GotoDefinitionResponse::Scalar(Location::new(
+                document.uri.clone(),
+                expected_declaration,
+            )))
+        );
+        assert_eq!(
+            references(&document, occurrences[1], true).unwrap(),
+            occurrences
+                .iter()
+                .map(|offset| Location::new(
+                    document.uri.clone(),
+                    source_range(&document, *offset, *offset + 1),
+                ))
+                .collect::<Vec<_>>()
+        );
+        let edit = rename(&document, occurrences[2], "value").unwrap();
+        let edits = edit.changes.unwrap().remove(&document.uri).unwrap();
+        assert_eq!(edits.len(), 3);
+        assert!(edits.iter().all(|edit| edit.new_text == "value"));
+    }
+
+    #[test]
+    fn rename_is_shadowing_safe_and_rejects_conflicts() {
+        let source = "model { real x; { real x; x = 1; } x = 2; }";
+        let document = document(source);
+        let occurrences = source
+            .match_indices('x')
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let edit = rename(&document, occurrences[2], "inner").unwrap();
+        let edits = edit.changes.unwrap().remove(&document.uri).unwrap();
+        let edited_ranges = edits.iter().map(|edit| edit.range).collect::<Vec<_>>();
+        assert_eq!(
+            edited_ranges,
+            vec![
+                source_range(&document, occurrences[1], occurrences[1] + 1),
+                source_range(&document, occurrences[2], occurrences[2] + 1),
+            ]
+        );
+        assert!(rename(&document, occurrences[2], "x").is_some());
+        assert!(rename(&document, occurrences[2], "model").is_none());
+    }
+
+    #[test]
+    fn user_distribution_completion_hover_and_definition_share_semantics() {
+        let source = "functions { real custom_lpdf(real y, real theta) { return normal_lpdf(y | theta, 1); } } data { real y; } parameters { real theta; } model { y ~ custom(theta); }";
+        let document = document(source);
+        let sampling_name = source.rfind("custom").unwrap();
+        let CompletionResponse::Array(items) = completion(&document, sampling_name) else {
+            panic!("expected completion array");
+        };
+        assert!(items.iter().any(|item| item.label == "custom"));
+        let hover = hover(&document, sampling_name).unwrap();
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("custom_lpdf"));
+        let declaration = source.find("custom_lpdf").unwrap();
+        assert_eq!(
+            goto_definition(&document, sampling_name),
+            Some(GotoDefinitionResponse::Scalar(Location::new(
+                document.uri.clone(),
+                source_range(&document, declaration, declaration + "custom_lpdf".len()),
+            )))
+        );
     }
 }

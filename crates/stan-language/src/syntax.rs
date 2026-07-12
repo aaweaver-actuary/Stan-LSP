@@ -1,3 +1,10 @@
+//! Auditable fixed language vocabulary and operator metadata for Stan 2.39.
+
+#![allow(
+    missing_docs,
+    reason = "individual token variants are exhaustively represented by their fixed spellings and role metadata"
+)]
+
 use stan_token_derive::Token;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Token)]

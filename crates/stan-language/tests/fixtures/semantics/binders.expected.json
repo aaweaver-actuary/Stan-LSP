@@ -1,0 +1,13 @@
+{
+  "symbols": [
+    {"name": "square", "kind": "Function", "start": 17, "end": 23},
+    {"name": "x", "kind": "FunctionParameter", "start": 29, "end": 30},
+    {"name": "n", "kind": "LoopVariable", "start": 65, "end": 66}
+  ],
+  "references": [
+    {"name": "x", "start": 41, "end": 42, "target": "x"},
+    {"name": "x", "start": 45, "end": 46, "target": "x"},
+    {"name": "square", "start": 77, "end": 83, "target": "square"},
+    {"name": "n", "start": 84, "end": 85, "target": "n"}
+  ]
+}

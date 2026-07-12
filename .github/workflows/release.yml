@@ -8,7 +8,42 @@ permissions:
   contents: write
 
 jobs:
+  corpus-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download official stanc3 2.39.0
+        shell: bash
+        run: |
+          mkdir -p /tmp/stanc
+          url=$(gh api repos/stan-dev/stanc3/releases/tags/v2.39.0 --jq '.assets[] | select(.name | test("linux"; "i")) | .browser_download_url' | head -1)
+          test -n "$url"
+          curl --fail --location "$url" --output /tmp/stanc/asset
+          kind=$(file --brief /tmp/stanc/asset)
+          if [[ "$kind" == *"Zip archive"* ]]; then
+            unzip /tmp/stanc/asset -d /tmp/stanc/unpacked
+          elif [[ "$kind" == *"gzip compressed"* ]]; then
+            mkdir /tmp/stanc/unpacked
+            tar -xzf /tmp/stanc/asset -C /tmp/stanc/unpacked
+          else
+            cp /tmp/stanc/asset /tmp/stanc/stanc
+          fi
+          binary=$(find /tmp/stanc -type f \( -name stanc -o -name 'stanc3*' \) | head -1)
+          test -n "$binary"
+          chmod +x "$binary"
+          echo "STANC=$binary" >> "$GITHUB_ENV"
+      - run: cargo run -p xtask -- corpus fetch
+      - run: cargo run -p xtask -- corpus check --external --stanc "$STANC" --json corpus-report.json
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          files: corpus-report.json
+
   binaries:
+    needs: corpus-gate
     strategy:
       matrix:
         include:
@@ -56,6 +91,7 @@ jobs:
             stan-tools-*.zip.sha256
 
   vscode:
+    needs: corpus-gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

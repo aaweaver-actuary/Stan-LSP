@@ -1,9 +1,14 @@
 //! Deterministic native formatting over the lossless syntax tree.
 
-use crate::{AnalysisSnapshot, Symbol, SyntaxKind, SyntaxNodeKind, TextEdit, TextRange, analyze};
+use crate::{
+    AnalysisSnapshot, Revision, Symbol, SyntaxKind, SyntaxNodeKind, TextEdit, TextRange,
+    analyze_revision,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Deterministic options shared by the formatter library, CLI, and LSP endpoint.
 pub struct FormatterConfig {
+    /// Number of spaces used for one indentation level.
     pub indent_width: usize,
 }
 
@@ -14,6 +19,16 @@ impl Default for FormatterConfig {
 }
 
 impl FormatterConfig {
+    /// Parses the supported `stanfmt.toml` keys strictly.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message containing the offending line or option.
+    ///
+    /// ```
+    /// let config = stan_language::FormatterConfig::from_toml("indent_width = 4").unwrap();
+    /// assert_eq!(config.indent_width, 4);
+    /// ```
     pub fn from_toml(input: &str) -> Result<Self, String> {
         let mut config = Self::default();
         for (line_number, raw) in input.lines().enumerate() {
@@ -44,11 +59,18 @@ impl FormatterConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// Controlled reason that native formatting cannot safely proceed.
 pub enum FormatError {
     #[error("source contains lexical or structural errors")]
+    /// The recovery tree contains errors for which formatting is not proven safe.
     InvalidSyntax,
 }
 
+/// Formats one complete analysis snapshot deterministically.
+///
+/// # Errors
+///
+/// Returns [`FormatError::InvalidSyntax`] when the input is not safe to format.
 pub fn format(
     snapshot: &AnalysisSnapshot,
     config: &FormatterConfig,
@@ -177,6 +199,11 @@ pub fn format(
     Ok(output)
 }
 
+/// Formats the smallest complete syntax construct containing `requested`.
+///
+/// # Errors
+///
+/// Returns [`FormatError::InvalidSyntax`] when no safe construct is available.
 pub fn format_range(
     snapshot: &AnalysisSnapshot,
     config: &FormatterConfig,
@@ -201,7 +228,7 @@ pub fn format_range(
         .min_by_key(|node| node.range.end - node.range.start);
     let range = node.map_or(requested, |node| node.range);
     let source = &snapshot.syntax.text()[range.start as usize..range.end as usize];
-    let replacement = format(&analyze(source), config)?;
+    let replacement = format(&analyze_revision(source, Revision::default()), config)?;
     Ok(TextEdit { range, replacement })
 }
 
@@ -263,29 +290,45 @@ fn trim_spaces(output: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze;
+    use crate::{analyze_revision, format_range};
 
     #[test]
     fn formatting_is_deterministic_and_idempotent() {
         let source = "data{real y;}model{y~normal(0,1);}";
-        let first = format(&analyze(source), &FormatterConfig::default()).unwrap();
+        let first = format(
+            &analyze_revision(source, Revision::default()),
+            &FormatterConfig::default(),
+        )
+        .unwrap();
         assert_eq!(
             first,
             "data {\n  real y;\n}\nmodel {\n  y ~ normal(0, 1);\n}\n"
         );
-        let second = format(&analyze(&first), &FormatterConfig::default()).unwrap();
+        let second = format(
+            &analyze_revision(&first, Revision::default()),
+            &FormatterConfig::default(),
+        )
+        .unwrap();
         assert_eq!(second, first);
     }
 
     #[test]
     fn formatting_preserves_comments_directives_and_strings() {
         let source = "#include shared.stan\nmodel{/* keep */print(\"a b\");// tail\n}";
-        let formatted = format(&analyze(source), &FormatterConfig::default()).unwrap();
+        let formatted = format(
+            &analyze_revision(source, Revision::default()),
+            &FormatterConfig::default(),
+        )
+        .unwrap();
         for preserved in ["#include shared.stan", "/* keep */", "\"a b\"", "// tail"] {
             assert!(formatted.contains(preserved), "{formatted}");
         }
         assert_eq!(
-            format(&analyze(&formatted), &FormatterConfig::default()).unwrap(),
+            format(
+                &analyze_revision(&formatted, Revision::default()),
+                &FormatterConfig::default()
+            )
+            .unwrap(),
             formatted
         );
     }
@@ -304,7 +347,7 @@ mod tests {
     #[test]
     fn range_formatting_selects_a_complete_syntax_construct() {
         let source = "model { real x; x=1; }";
-        let snapshot = analyze(source);
+        let snapshot = analyze_revision(source, Revision::default());
         let offset = source.find("x=1").unwrap();
         let edit = format_range(
             &snapshot,

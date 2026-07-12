@@ -29,7 +29,12 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --doc --workspace
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - run: cargo run -p xtask -- validate
+      - run: cargo run -p xtask -- corpus check --json target/corpus-smoke-report.json
       - run: cargo run -p stan-tools --bin stanfmt -- --check crates/stan-language/tests/fixtures/parser/valid/basic.stan
       - run: cargo run -p stan-tools --bin stanlint -- crates/stan-language/tests/fixtures/parser/valid/basic.stan
 

@@ -2,22 +2,41 @@
 
 use crate::{Directive, Keyword, LegacyLanguageElement, Symbol};
 
+/// A UTF-8 byte offset in a Stan source file.
+pub type TextSize = u32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Half-open UTF-8 byte range in one source file.
 pub struct TextRange {
-    pub start: u32,
-    pub end: u32,
+    /// Inclusive start byte offset.
+    pub start: TextSize,
+    /// Exclusive end byte offset.
+    pub end: TextSize,
 }
 
 impl TextRange {
+    /// Creates a range from byte offsets representable by [`TextSize`].
+    ///
+    /// ```
+    /// let range = stan_language::TextRange::new(2, 5);
+    /// assert_eq!((range.start, range.end), (2, 5));
+    /// ```
     pub const fn new(start: usize, end: usize) -> Self {
         Self {
             start: start as u32,
             end: end as u32,
         }
     }
+
+    /// Returns whether `offset` falls within this half-open range.
+    pub fn contains(&self, offset: TextSize) -> bool {
+        self.start <= offset && offset < self.end
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Lossless lexical classification used by the recovery parser.
+#[allow(missing_docs, reason = "variants are the complete lexical inventory")]
 pub enum SyntaxKind {
     Keyword(Keyword),
     Symbol(Symbol),
@@ -37,12 +56,20 @@ pub enum SyntaxKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// One lossless source token; its spelling remains in the source text.
 pub struct Token {
+    /// Lexical classification.
     pub kind: SyntaxKind,
+    /// Exact spelling range in UTF-8 bytes.
     pub range: TextRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// High-confidence malformed-token classification.
+#[allow(
+    missing_docs,
+    reason = "variants correspond one-to-one with documented lex diagnostics"
+)]
 pub enum LexicalDiagnosticKind {
     InvalidCharacter,
     UnterminatedString,
@@ -52,6 +79,7 @@ pub enum LexicalDiagnosticKind {
 }
 
 impl LexicalDiagnosticKind {
+    /// Returns the stable public diagnostic code.
     pub const fn code(self) -> &'static str {
         match self {
             Self::InvalidCharacter => "lex.invalid-character",
@@ -62,6 +90,7 @@ impl LexicalDiagnosticKind {
         }
     }
 
+    /// Returns the default human-readable message.
     pub const fn message(self) -> &'static str {
         match self {
             Self::InvalidCharacter => "invalid character in Stan source",
@@ -74,17 +103,24 @@ impl LexicalDiagnosticKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Lexer finding with an exact UTF-8 source range.
 pub struct LexicalDiagnostic {
+    /// Finding classification.
     pub kind: LexicalDiagnosticKind,
+    /// Offending source range.
     pub range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Complete result of lossless lexing, including recoverable errors.
 pub struct LexResult {
+    /// Tokens covering all source bytes plus EOF.
     pub tokens: Vec<Token>,
+    /// High-confidence lexical diagnostics.
     pub diagnostics: Vec<LexicalDiagnostic>,
 }
 
+/// Lexes arbitrary UTF-8 Stan editor text without panicking.
 pub fn lex(text: &str) -> LexResult {
     Lexer {
         text,

@@ -1,0 +1,8 @@
+{
+  "absent_codes": [
+    "correctness.argument-count",
+    "correctness.argument-type",
+    "correctness.illegal-call-context",
+    "correctness.unknown-distribution"
+  ]
+}

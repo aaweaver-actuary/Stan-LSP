@@ -1,6 +1,13 @@
+//! UTF-8 byte and LSP UTF-16 position conversion primitives.
+
 use tower_lsp_server::ls_types::Position;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Invalid source-position conversion.
+#[allow(
+    missing_docs,
+    reason = "variants precisely name each conversion failure"
+)]
 pub enum PositionError {
     LineOutOfBounds,
     CharacterOutOfBounds,
@@ -10,11 +17,13 @@ pub enum PositionError {
 }
 
 #[derive(Debug, Clone)]
+/// Cached source-line starts used by [`crate::mapper::LspMapper`].
 pub struct LineIndex {
     line_starts: Vec<usize>,
 }
 
 impl LineIndex {
+    /// Indexes line starts in UTF-8 source text.
     pub fn new(text: &str) -> Self {
         let mut line_starts = vec![0];
         for (offset, byte) in text.bytes().enumerate() {
@@ -25,6 +34,11 @@ impl LineIndex {
         Self { line_starts }
     }
 
+    /// Converts an LSP UTF-16 position to a UTF-8 byte offset.
+    ///
+    /// # Errors
+    ///
+    /// Rejects nonexistent lines/columns and positions inside a surrogate pair.
     pub fn position_to_offset(
         &self,
         text: &str,
@@ -58,6 +72,11 @@ impl LineIndex {
         }
     }
 
+    /// Converts a UTF-8 byte offset to an LSP UTF-16 position.
+    ///
+    /// # Errors
+    ///
+    /// Rejects out-of-bounds offsets and offsets inside a UTF-8 character.
     pub fn offset_to_position(&self, text: &str, offset: usize) -> Result<Position, PositionError> {
         if offset > text.len() {
             return Err(PositionError::OffsetOutOfBounds);

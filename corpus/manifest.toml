@@ -1,0 +1,10 @@
+schema_version = 1
+
+[[source]]
+name = "stan-example-models"
+repository = "https://github.com/stan-dev/example-models"
+revision = "e5b7d9e2e9ecc375805c7e49e4a4d4c1882b5e3b"
+archive_url = "https://github.com/stan-dev/example-models/archive/e5b7d9e2e9ecc375805c7e49e4a4d4c1882b5e3b.tar.gz"
+sha256 = "5100be91ff36c5a098239013e2ebf526e92a606fcbd926ddc162d26b4333e522"
+license = "BSD-3-Clause"
+include = "**/*.stan"

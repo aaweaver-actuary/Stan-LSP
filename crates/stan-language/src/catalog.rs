@@ -1,3 +1,10 @@
+//! Versioned, checked-in built-in function signatures and metadata.
+
+#![allow(
+    missing_docs,
+    reason = "catalog error variants and generated identities are self-describing; public catalog operations are documented"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
@@ -53,6 +60,12 @@ impl FunctionCatalog {
         &[crate::STAN_VERSION]
     }
 
+    /// Returns the validated catalog for the default embedded Stan version.
+    ///
+    /// ```
+    /// let catalog = stan_language::FunctionCatalog::global();
+    /// assert!(!catalog.signatures(stan_language::StanFunction::Abs).is_empty());
+    /// ```
     pub fn global() -> &'static Self {
         static CATALOG: OnceLock<FunctionCatalog> = OnceLock::new();
         CATALOG.get_or_init(|| {

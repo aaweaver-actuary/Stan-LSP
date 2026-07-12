@@ -1,0 +1,4 @@
+{
+  "outer": {"declaration": [13, 14], "references": [[35, 36]]},
+  "inner": {"declaration": [23, 24], "references": [[26, 27]]}
+}

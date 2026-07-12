@@ -6,7 +6,7 @@ use std::{
 };
 
 use serde_json::json;
-use stan_language::{LintConfig, Severity, analyze, lint};
+use stan_language::{LintConfig, Revision, Severity, analyze_revision, lint};
 
 fn main() -> ExitCode {
     match run() {
@@ -58,7 +58,7 @@ fn run() -> Result<bool, String> {
 
     let mut findings = Vec::new();
     for (path, source) in inputs {
-        let snapshot = analyze(&source);
+        let snapshot = analyze_revision(&source, Revision::default());
         for diagnostic in snapshot
             .diagnostics
             .iter()

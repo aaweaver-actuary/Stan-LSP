@@ -1,3 +1,10 @@
+//! Structural types used by the embedded function-signature catalog.
+
+#![allow(
+    missing_docs,
+    reason = "catalog data structures are exhaustively described by their field names and serialized representation"
+)]
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

@@ -8,6 +8,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Structural classification of a recovery-tree node.
+#[allow(
+    missing_docs,
+    reason = "variants are the documented syntax-node inventory"
+)]
 pub enum SyntaxNodeKind {
     SourceFile,
     ProgramBlock(ProgramBlockKind),
@@ -27,6 +32,11 @@ pub enum SyntaxNodeKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Immutable untyped node in the flat lossless recovery tree.
+#[allow(
+    missing_docs,
+    reason = "fields are structural storage consumed through typed wrappers"
+)]
 pub struct SyntaxNode {
     pub kind: SyntaxNodeKind,
     pub range: TextRange,
@@ -35,6 +45,7 @@ pub struct SyntaxNode {
 }
 
 #[derive(Debug, Clone)]
+/// Lossless source text, tokens, and recovery nodes for arbitrary editor input.
 pub struct SyntaxTree {
     text: Arc<str>,
     tokens: Arc<[Token]>,
@@ -42,22 +53,27 @@ pub struct SyntaxTree {
 }
 
 impl SyntaxTree {
+    /// Returns the original source text.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Returns the complete lossless token stream.
     pub fn tokens(&self) -> &[Token] {
         &self.tokens
     }
 
+    /// Returns untyped recovery nodes; prefer typed [`SourceFile`] queries.
     pub fn nodes(&self) -> &[SyntaxNode] {
         &self.nodes
     }
 
+    /// Returns the typed root view.
     pub fn source_file(&self) -> SourceFile<'_> {
         SourceFile { tree: self }
     }
 
+    /// Reconstructs the original source exactly from token ranges.
     pub fn reconstruct(&self) -> String {
         self.tokens
             .iter()
@@ -68,11 +84,13 @@ impl SyntaxTree {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Typed root view used to enumerate supported syntax constructs.
 pub struct SourceFile<'a> {
     tree: &'a SyntaxTree,
 }
 
 impl<'a> SourceFile<'a> {
+    /// Enumerates program blocks in source order.
     pub fn program_blocks(self) -> impl Iterator<Item = ProgramBlock<'a>> {
         self.tree
             .nodes
@@ -87,9 +105,62 @@ impl<'a> SourceFile<'a> {
                 _ => None,
             })
     }
+
+    /// Enumerates structured user-function declarations.
+    pub fn function_declarations(self) -> impl Iterator<Item = FunctionDeclaration<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::FunctionDeclaration).map(|index| {
+            FunctionDeclaration {
+                tree: self.tree,
+                index,
+            }
+        })
+    }
+
+    /// Enumerates variable declarations.
+    pub fn variable_declarations(self) -> impl Iterator<Item = VariableDeclaration<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::VariableDeclaration).map(|index| {
+            VariableDeclaration {
+                tree: self.tree,
+                index,
+            }
+        })
+    }
+
+    /// Enumerates `for` statements with recognized binders and bodies.
+    pub fn for_statements(self) -> impl Iterator<Item = ForStatement<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::ForStatement).map(|index| ForStatement {
+            tree: self.tree,
+            index,
+        })
+    }
+
+    /// Enumerates brace-delimited compound statements.
+    pub fn compound_statements(self) -> impl Iterator<Item = CompoundStatement<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::CompoundStatement).map(|index| CompoundStatement {
+            tree: self.tree,
+            index,
+        })
+    }
+
+    /// Enumerates syntactically recognized call expressions, including incomplete calls.
+    pub fn call_expressions(self) -> impl Iterator<Item = CallExpression<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::FunctionCall).map(|index| CallExpression {
+            tree: self.tree,
+            index,
+        })
+    }
+
+    /// Enumerates semicolon-terminated sampling statements.
+    pub fn sampling_statements(self) -> impl Iterator<Item = SamplingStatement<'a>> {
+        nodes_of_kind(self.tree, SyntaxNodeKind::SamplingStatement).map(|index| SamplingStatement {
+            tree: self.tree,
+            index,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Typed program-block header and range.
 pub struct ProgramBlock<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -97,21 +168,552 @@ pub struct ProgramBlock<'a> {
 }
 
 impl ProgramBlock<'_> {
+    /// Returns the grammar-level block kind.
     pub const fn kind(self) -> ProgramBlockKind {
         self.kind
     }
 
+    /// Returns the complete header-and-body range.
     pub fn range(self) -> TextRange {
         self.tree.nodes[self.index].range
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+/// Borrowed identifier spelling and exact source range.
+pub struct NameRef<'a> {
+    tree: &'a SyntaxTree,
+    range: TextRange,
+}
+
+impl<'a> NameRef<'a> {
+    /// Returns the identifier's UTF-8 byte range.
+    pub const fn range(self) -> TextRange {
+        self.range
+    }
+
+    /// Returns the identifier spelling.
+    pub fn text(self) -> &'a str {
+        text_for_range(self.tree, self.range)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Borrowed type spelling retained exactly as written.
+pub struct TypeSyntax<'a> {
+    tree: &'a SyntaxTree,
+    range: TextRange,
+}
+
+impl<'a> TypeSyntax<'a> {
+    /// Returns the type spelling's source range.
+    pub const fn range(self) -> TextRange {
+        self.range
+    }
+
+    /// Returns the original type spelling, including dimensions and constraints.
+    pub fn text(self) -> &'a str {
+        text_for_range(self.tree, self.range)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// One name introduced by a variable declaration.
+pub struct Declarator<'a> {
+    tree: &'a SyntaxTree,
+    range: TextRange,
+    name_range: TextRange,
+}
+
+impl<'a> Declarator<'a> {
+    /// Returns the declarator portion of the declaration.
+    pub const fn range(self) -> TextRange {
+        self.range
+    }
+
+    /// Returns the declared name.
+    pub fn name(self) -> NameRef<'a> {
+        NameRef {
+            tree: self.tree,
+            range: self.name_range,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Structured function parameter, including qualifier and type spelling.
+pub struct FunctionParameter<'a> {
+    tree: &'a SyntaxTree,
+    range: TextRange,
+    name_range: TextRange,
+    type_range: TextRange,
+    data_only: bool,
+}
+
+impl<'a> FunctionParameter<'a> {
+    /// Returns the complete parameter range.
+    pub const fn range(self) -> TextRange {
+        self.range
+    }
+
+    /// Returns the introduced parameter name.
+    pub fn name(self) -> NameRef<'a> {
+        NameRef {
+            tree: self.tree,
+            range: self.name_range,
+        }
+    }
+
+    /// Returns the original parameter type spelling.
+    pub fn type_syntax(self) -> TypeSyntax<'a> {
+        TypeSyntax {
+            tree: self.tree,
+            range: self.type_range,
+        }
+    }
+
+    /// Reports whether the parameter carries Stan's `data` qualifier.
+    pub const fn is_data_only(self) -> bool {
+        self.data_only
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed view of a complete user-defined function declaration.
+pub struct FunctionDeclaration<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl<'a> FunctionDeclaration<'a> {
+    /// Returns the declaration range.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+
+    /// Returns the function name when structurally present.
+    pub fn name(self) -> Option<NameRef<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        indices.windows(2).find_map(|window| {
+            (self.tree.tokens[window[0]].kind == SyntaxKind::Identifier
+                && self.tree.tokens[window[1]].kind == SyntaxKind::Symbol(Symbol::LeftParen))
+            .then_some(NameRef {
+                tree: self.tree,
+                range: self.tree.tokens[window[0]].range,
+            })
+        })
+    }
+
+    /// Returns the original return-type spelling.
+    pub fn return_type(self) -> Option<TypeSyntax<'a>> {
+        let name = self.name()?;
+        let node = &self.tree.nodes[self.index];
+        Some(TypeSyntax {
+            tree: self.tree,
+            range: TextRange {
+                start: node.range.start,
+                end: name.range.start,
+            },
+        })
+    }
+
+    /// Returns structured parameters in declaration order.
+    pub fn parameters(self) -> Vec<FunctionParameter<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let Some(name_position) = indices.iter().position(|index| {
+            self.tree.tokens[*index].kind == SyntaxKind::Identifier
+                && indices
+                    .get(
+                        indices
+                            .iter()
+                            .position(|candidate| candidate == index)
+                            .unwrap_or(0)
+                            + 1,
+                    )
+                    .is_some_and(|next| {
+                        self.tree.tokens[*next].kind == SyntaxKind::Symbol(Symbol::LeftParen)
+                    })
+        }) else {
+            return Vec::new();
+        };
+        let open_position = name_position + 1;
+        let Some(close_position) = matching_position(
+            self.tree,
+            &indices,
+            open_position,
+            Symbol::LeftParen,
+            Symbol::RightParen,
+        ) else {
+            return Vec::new();
+        };
+        split_top_level_indices(
+            self.tree,
+            &indices[open_position + 1..close_position],
+            Symbol::Comma,
+        )
+        .into_iter()
+        .filter_map(|segment| parameter_from_indices(self.tree, &segment))
+        .collect()
+    }
+
+    /// Returns the brace-delimited body range when complete.
+    pub fn body_range(self) -> Option<TextRange> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let open_position = indices.iter().position(|index| {
+            self.tree.tokens[*index].kind == SyntaxKind::Symbol(Symbol::LeftBrace)
+        })?;
+        let close_position = matching_position(
+            self.tree,
+            &indices,
+            open_position,
+            Symbol::LeftBrace,
+            Symbol::RightBrace,
+        )?;
+        Some(TextRange {
+            start: self.tree.tokens[indices[open_position]].range.start,
+            end: self.tree.tokens[indices[close_position]].range.end,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed variable declaration view.
+pub struct VariableDeclaration<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl<'a> VariableDeclaration<'a> {
+    /// Returns the complete declaration range, including semicolon.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+
+    /// Returns the original type spelling.
+    pub fn type_syntax(self) -> Option<TypeSyntax<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let name_position = declaration_name_position(self.tree, &indices)?;
+        Some(TypeSyntax {
+            tree: self.tree,
+            range: TextRange {
+                start: self.tree.tokens[*indices.first()?].range.start,
+                end: self.tree.tokens[indices[name_position]].range.start,
+            },
+        })
+    }
+
+    /// Returns names introduced by this declaration.
+    pub fn declarators(self) -> Vec<Declarator<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let Some(name_position) = declaration_name_position(self.tree, &indices) else {
+            return Vec::new();
+        };
+        let name_index = indices[name_position];
+        vec![Declarator {
+            tree: self.tree,
+            range: TextRange {
+                start: self.tree.tokens[name_index].range.start,
+                end: self.tree.nodes[self.index].range.end,
+            },
+            name_range: self.tree.tokens[name_index].range,
+        }]
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed `for` statement with a scoped binder.
+pub struct ForStatement<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl<'a> ForStatement<'a> {
+    /// Returns the complete loop range.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+
+    /// Returns the loop binder when structurally present.
+    pub fn binder(self) -> Option<NameRef<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let in_position = indices
+            .iter()
+            .position(|index| self.tree.tokens[*index].kind == SyntaxKind::Keyword(Keyword::In))?;
+        indices[..in_position].iter().rev().find_map(|index| {
+            (self.tree.tokens[*index].kind == SyntaxKind::Identifier).then_some(NameRef {
+                tree: self.tree,
+                range: self.tree.tokens[*index].range,
+            })
+        })
+    }
+
+    /// Returns the brace-delimited body when complete.
+    pub fn body_range(self) -> Option<TextRange> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let open_position = indices.iter().position(|index| {
+            self.tree.tokens[*index].kind == SyntaxKind::Symbol(Symbol::LeftBrace)
+        })?;
+        let close_position = matching_position(
+            self.tree,
+            &indices,
+            open_position,
+            Symbol::LeftBrace,
+            Symbol::RightBrace,
+        )?;
+        Some(TextRange {
+            start: self.tree.tokens[indices[open_position]].range.start,
+            end: self.tree.tokens[indices[close_position]].range.end,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed brace-delimited compound statement.
+pub struct CompoundStatement<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl CompoundStatement<'_> {
+    /// Returns the brace-delimited source range.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed function call, which may be incomplete during editing.
+pub struct CallExpression<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl<'a> CallExpression<'a> {
+    /// Returns the recognized call range.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+
+    /// Returns the callee when present.
+    pub fn callee(self) -> Option<NameRef<'a>> {
+        let index = significant_node_tokens(self.tree, self.index)
+            .into_iter()
+            .find(|index| self.tree.tokens[*index].kind == SyntaxKind::Identifier)?;
+        Some(NameRef {
+            tree: self.tree,
+            range: self.tree.tokens[index].range,
+        })
+    }
+
+    /// Returns the closing parenthesis range when present.
+    pub fn closing_paren(self) -> Option<TextRange> {
+        significant_node_tokens(self.tree, self.index)
+            .into_iter()
+            .rev()
+            .find_map(|index| {
+                (self.tree.tokens[index].kind == SyntaxKind::Symbol(Symbol::RightParen))
+                    .then_some(self.tree.tokens[index].range)
+            })
+    }
+
+    /// Reports whether semantic call checks have enough structure to run.
+    pub fn is_complete(self) -> bool {
+        self.callee().is_some() && self.closing_paren().is_some()
+    }
+
+    /// Reports whether this parenthesized construct is a function declaration header.
+    pub fn is_declaration(self) -> bool {
+        let Some(callee) = self.callee() else {
+            return false;
+        };
+        self.tree
+            .source_file()
+            .function_declarations()
+            .any(|function| {
+                function
+                    .name()
+                    .is_some_and(|name| name.range() == callee.range())
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Typed sampling statement, which may retain incomplete inner syntax.
+pub struct SamplingStatement<'a> {
+    tree: &'a SyntaxTree,
+    index: usize,
+}
+
+impl<'a> SamplingStatement<'a> {
+    /// Returns the complete semicolon-terminated statement range.
+    pub fn range(self) -> TextRange {
+        self.tree.nodes[self.index].range
+    }
+
+    /// Returns the distribution spelling after `~`.
+    pub fn distribution(self) -> Option<NameRef<'a>> {
+        let indices = significant_node_tokens(self.tree, self.index);
+        let tilde = indices
+            .iter()
+            .position(|index| self.tree.tokens[*index].kind == SyntaxKind::Symbol(Symbol::Tilde))?;
+        indices[tilde + 1..].iter().find_map(|index| {
+            (self.tree.tokens[*index].kind == SyntaxKind::Identifier).then_some(NameRef {
+                tree: self.tree,
+                range: self.tree.tokens[*index].range,
+            })
+        })
+    }
+
+    /// Returns the closing call parenthesis when present.
+    pub fn closing_paren(self) -> Option<TextRange> {
+        significant_node_tokens(self.tree, self.index)
+            .into_iter()
+            .rev()
+            .find_map(|index| {
+                (self.tree.tokens[index].kind == SyntaxKind::Symbol(Symbol::RightParen))
+                    .then_some(self.tree.tokens[index].range)
+            })
+    }
+
+    /// Reports whether distribution diagnostics have enough structure to run.
+    pub fn is_complete(self) -> bool {
+        self.distribution().is_some() && self.closing_paren().is_some()
+    }
+}
+
+fn nodes_of_kind(tree: &SyntaxTree, kind: SyntaxNodeKind) -> impl Iterator<Item = usize> + '_ {
+    tree.nodes
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, node)| (node.kind == kind).then_some(index))
+}
+
+fn significant_node_tokens(tree: &SyntaxTree, index: usize) -> Vec<usize> {
+    tree.nodes[index]
+        .token_range
+        .clone()
+        .filter(|token| !is_trivia(tree.tokens[*token].kind))
+        .collect()
+}
+
+fn text_for_range(tree: &SyntaxTree, range: TextRange) -> &str {
+    &tree.text[range.start as usize..range.end as usize]
+}
+
+fn matching_position(
+    tree: &SyntaxTree,
+    indices: &[usize],
+    open_position: usize,
+    open: Symbol,
+    close: Symbol,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    for (position, index) in indices.iter().copied().enumerate().skip(open_position) {
+        match tree.tokens[index].kind {
+            SyntaxKind::Symbol(symbol) if symbol == open => depth += 1,
+            SyntaxKind::Symbol(symbol) if symbol == close => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(position);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_indices(
+    tree: &SyntaxTree,
+    indices: &[usize],
+    separator: Symbol,
+) -> Vec<Vec<usize>> {
+    let mut output = Vec::new();
+    let mut start = 0usize;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    for (position, index) in indices.iter().copied().enumerate() {
+        match tree.tokens[index].kind {
+            SyntaxKind::Symbol(Symbol::LeftParen) => parens += 1,
+            SyntaxKind::Symbol(Symbol::RightParen) => parens = parens.saturating_sub(1),
+            SyntaxKind::Symbol(Symbol::LeftBracket) => brackets += 1,
+            SyntaxKind::Symbol(Symbol::RightBracket) => brackets = brackets.saturating_sub(1),
+            SyntaxKind::Symbol(symbol) if symbol == separator && parens == 0 && brackets == 0 => {
+                output.push(indices[start..position].to_vec());
+                start = position + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < indices.len() {
+        output.push(indices[start..].to_vec());
+    }
+    output
+}
+
+fn parameter_from_indices<'a>(
+    tree: &'a SyntaxTree,
+    indices: &[usize],
+) -> Option<FunctionParameter<'a>> {
+    let name_position = declaration_name_position(tree, indices)?;
+    let name_index = indices[name_position];
+    let first = *indices.first()?;
+    let type_start = indices
+        .iter()
+        .copied()
+        .find(|index| tree.tokens[*index].kind != SyntaxKind::Keyword(Keyword::Data))?;
+    Some(FunctionParameter {
+        tree,
+        range: TextRange {
+            start: tree.tokens[first].range.start,
+            end: tree.tokens[*indices.last()?].range.end,
+        },
+        name_range: tree.tokens[name_index].range,
+        type_range: TextRange {
+            start: tree.tokens[type_start].range.start,
+            end: tree.tokens[name_index].range.start,
+        },
+        data_only: tree.tokens[first].kind == SyntaxKind::Keyword(Keyword::Data),
+    })
+}
+
+fn declaration_name_position(tree: &SyntaxTree, indices: &[usize]) -> Option<usize> {
+    let mut saw_type = false;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut angles = 0usize;
+    for (position, index) in indices.iter().copied().enumerate() {
+        match tree.tokens[index].kind {
+            kind if is_type_keyword(kind) => saw_type = true,
+            SyntaxKind::Symbol(Symbol::LeftParen) if saw_type => parens += 1,
+            SyntaxKind::Symbol(Symbol::RightParen) if saw_type => parens = parens.saturating_sub(1),
+            SyntaxKind::Symbol(Symbol::LeftBracket) if saw_type => brackets += 1,
+            SyntaxKind::Symbol(Symbol::RightBracket) if saw_type => {
+                brackets = brackets.saturating_sub(1)
+            }
+            SyntaxKind::Symbol(Symbol::LessThan) if saw_type => angles += 1,
+            SyntaxKind::Symbol(Symbol::GreaterThan) if saw_type => {
+                angles = angles.saturating_sub(1)
+            }
+            SyntaxKind::Identifier if saw_type && parens == 0 && brackets == 0 && angles == 0 => {
+                return Some(position);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
+/// Parser output containing a lossless tree and recoverable structural diagnostics.
 pub struct ParseResult {
+    /// Always-present lossless recovery tree.
     pub tree: SyntaxTree,
+    /// High-confidence structural findings.
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Parses a lossless token stream without rejecting incomplete editor input.
 pub fn parse(text: Arc<str>, tokens: Arc<[Token]>) -> ParseResult {
     Parser::new(text, tokens).run()
 }
@@ -443,37 +1045,54 @@ impl Parser {
         let significant = self.significant.clone();
         let mut statement_start = 0usize;
         for (position, index) in significant.iter().copied().enumerate() {
-            if position + 3 >= significant.len() || !is_type_keyword(self.tokens[index].kind) {
+            if self.tokens[index].kind != SyntaxKind::Identifier {
                 continue;
             }
-            let name = significant[position + 1];
-            let open = significant[position + 2];
-            if self.tokens[name].kind != SyntaxKind::Identifier
-                || self.tokens[open].kind != SyntaxKind::Symbol(Symbol::LeftParen)
-            {
+            let Some(open) = significant.get(position + 1).copied() else {
+                continue;
+            };
+            if self.tokens[open].kind != SyntaxKind::Symbol(Symbol::LeftParen) {
                 continue;
             }
             let Some(close) = self.delimiter_pairs.get(&open).copied() else {
                 continue;
             };
-            let Some(brace) = significant
-                .iter()
-                .copied()
-                .find(|candidate| *candidate > close)
+            let Some(close_position) = significant.iter().position(|candidate| *candidate == close)
             else {
+                continue;
+            };
+            let Some(brace) = significant.get(close_position + 1).copied() else {
                 continue;
             };
             if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
                 continue;
             }
+            let start_position = significant[..position]
+                .iter()
+                .rposition(|candidate| {
+                    matches!(
+                        self.tokens[*candidate].kind,
+                        SyntaxKind::Symbol(
+                            Symbol::LeftBrace | Symbol::RightBrace | Symbol::Semicolon
+                        )
+                    )
+                })
+                .map_or(0, |boundary| boundary + 1);
+            if !significant[start_position..position]
+                .iter()
+                .any(|candidate| is_type_keyword(self.tokens[*candidate].kind))
+            {
+                continue;
+            }
+            let start = significant[start_position];
             let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
             self.nodes.push(SyntaxNode {
                 kind: SyntaxNodeKind::FunctionDeclaration,
                 range: TextRange {
-                    start: self.tokens[index].range.start,
+                    start: self.tokens[start].range.start,
                     end: self.tokens[end].range.end,
                 },
-                token_range: index..end.saturating_add(1),
+                token_range: start..end.saturating_add(1),
                 parent: Some(0),
             });
         }
@@ -884,6 +1503,68 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn structured_function_loop_call_and_sampling_views_have_exact_ranges() {
+        let source = "functions { real f(data real x, array[2] int y) { return x; } } model { for (n in 1:2) { y ~ custom(n); } }";
+        let result = parse_source(source);
+        let function = result
+            .tree
+            .source_file()
+            .function_declarations()
+            .next()
+            .unwrap();
+        assert_eq!(function.name().unwrap().text(), "f");
+        assert_eq!(function.return_type().unwrap().text().trim(), "real");
+        let parameters = function.parameters();
+        assert_eq!(parameters.len(), 2);
+        assert!(parameters[0].is_data_only());
+        assert_eq!(parameters[0].name().text(), "x");
+        assert_eq!(parameters[1].name().text(), "y");
+        assert_eq!(parameters[1].type_syntax().text().trim(), "array[2] int");
+
+        let for_statement = result.tree.source_file().for_statements().next().unwrap();
+        assert_eq!(for_statement.binder().unwrap().text(), "n");
+        assert!(for_statement.body_range().is_some());
+        let sampling = result
+            .tree
+            .source_file()
+            .sampling_statements()
+            .next()
+            .unwrap();
+        assert_eq!(sampling.distribution().unwrap().text(), "custom");
+        assert!(sampling.is_complete());
+    }
+
+    #[test]
+    fn structured_functions_preserve_container_return_types() {
+        let source = "functions { array[] real f(real x) { return {x}; } tuple(real, int) g() { return (1.0, 1); } }";
+        let result = parse_source(source);
+        let functions = result
+            .tree
+            .source_file()
+            .function_declarations()
+            .collect::<Vec<_>>();
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[0].name().unwrap().text(), "f");
+        assert_eq!(
+            functions[0].return_type().unwrap().text().trim(),
+            "array[] real"
+        );
+        assert_eq!(functions[1].name().unwrap().text(), "g");
+        assert_eq!(
+            functions[1].return_type().unwrap().text().trim(),
+            "tuple(real, int)"
+        );
+    }
+
+    #[test]
+    fn incomplete_calls_are_explicitly_incomplete() {
+        let result = parse_source("model { normal(");
+        let call = result.tree.source_file().call_expressions().next().unwrap();
+        assert_eq!(call.callee().unwrap().text(), "normal");
+        assert!(!call.is_complete());
     }
 
     #[test]

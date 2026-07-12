@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::{fs, path::PathBuf};
 
 use serde_json::{Value, json};
 
@@ -128,7 +129,7 @@ fn publishes_and_clears_versioned_lexical_diagnostics() {
             "jsonrpc": "2.0", "method": "textDocument/didOpen",
             "params": {"textDocument": {
                 "uri": uri, "languageId": "stan", "version": 1,
-                "text": "model {\n  @\n}"
+                "text": "model {\n  😀@\n}"
             }}
         })))
         .unwrap();
@@ -145,7 +146,7 @@ fn publishes_and_clears_versioned_lexical_diagnostics() {
     assert_eq!(published["params"]["diagnostics"][0]["source"], "stan-lsp");
     assert_eq!(
         published["params"]["diagnostics"][0]["range"],
-        json!({"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 3}})
+        json!({"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 4}})
     );
 
     stdin
@@ -161,6 +162,32 @@ fn publishes_and_clears_versioned_lexical_diagnostics() {
     let cleared = read_frame(&mut stdout);
     assert_eq!(cleared["params"]["version"], 2);
     assert_eq!(cleared["params"]["diagnostics"], json!([]));
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 1},
+                "contentChanges": [{"text": "model { @ }"}]
+            }
+        })))
+        .unwrap();
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 3},
+                "contentChanges": [{"text": "model {\n  @\n}"}]
+            }
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let newest = read_frame(&mut stdout);
+    assert_eq!(newest["params"]["version"], 3);
+    assert_eq!(
+        newest["params"]["diagnostics"][0]["code"],
+        "lex.invalid-character"
+    );
 
     stdin
         .write_all(&frame(json!({
@@ -306,6 +333,100 @@ fn advertised_editor_features_respond_over_stdio() {
         assert_eq!(response["id"], id, "{method}: {response}");
         assert!(response.get("error").is_none(), "{method}: {response}");
         assert!(!response["result"].is_null(), "{method}: {response}");
+        match method {
+            "textDocument/documentSymbol" => {
+                let symbols = response["result"].as_array().unwrap();
+                let theta = symbols
+                    .iter()
+                    .find(|symbol| symbol["name"] == "theta")
+                    .unwrap();
+                assert_eq!(
+                    theta["selectionRange"],
+                    json!({"start": {"line": 0, "character": 18}, "end": {"line": 0, "character": 23}})
+                );
+            }
+            "textDocument/foldingRange" => {
+                assert_eq!(response["result"], json!([]));
+            }
+            "textDocument/semanticTokens/full" => {
+                assert_eq!(response["result"]["resultId"], "1");
+                assert!(!response["result"]["data"].as_array().unwrap().is_empty());
+            }
+            "textDocument/hover" => {
+                assert_eq!(
+                    response["result"]["range"],
+                    json!({"start": {"line": 1, "character": 16}, "end": {"line": 1, "character": 22}})
+                );
+                assert!(
+                    response["result"]["contents"]["value"]
+                        .as_str()
+                        .unwrap()
+                        .contains("normal")
+                );
+            }
+            "textDocument/completion" => {
+                let labels = response["result"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|item| item["label"].as_str())
+                    .collect::<Vec<_>>();
+                assert!(labels.contains(&"normal_lpdf"));
+                assert!(labels.contains(&"theta"));
+                assert!(!labels.contains(&"get_lp"));
+            }
+            "textDocument/signatureHelp" => {
+                assert_eq!(response["result"]["activeParameter"], 0);
+                assert!(
+                    response["result"]["signatures"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|signature| signature["label"].as_str().unwrap().contains("normal")),
+                    "{response}"
+                );
+            }
+            "textDocument/definition" => assert_eq!(
+                response["result"],
+                json!({
+                    "uri": uri,
+                    "range": {"start": {"line": 0, "character": 18}, "end": {"line": 0, "character": 23}}
+                })
+            ),
+            "textDocument/references" => assert_eq!(
+                response["result"],
+                json!([
+                    {"uri": uri, "range": {"start": {"line": 0, "character": 18}, "end": {"line": 0, "character": 23}}},
+                    {"uri": uri, "range": {"start": {"line": 1, "character": 8}, "end": {"line": 1, "character": 13}}}
+                ])
+            ),
+            "textDocument/documentHighlight" => assert_eq!(
+                response["result"],
+                json!([
+                    {"range": {"start": {"line": 0, "character": 18}, "end": {"line": 0, "character": 23}}, "kind": 1},
+                    {"range": {"start": {"line": 1, "character": 8}, "end": {"line": 1, "character": 13}}, "kind": 1}
+                ])
+            ),
+            "textDocument/formatting" | "textDocument/rangeFormatting" => {
+                let edits = response["result"].as_array().unwrap();
+                assert_eq!(edits.len(), 1);
+                assert_eq!(
+                    edits[0]["newText"],
+                    "parameters {\n  real theta;\n}\nmodel {\n  theta ~ normal(0, 1);\n}\n"
+                );
+            }
+            "textDocument/inlayHint" | "textDocument/codeAction" => {
+                assert_eq!(response["result"], json!([]));
+            }
+            "textDocument/rename" => assert_eq!(
+                response["result"]["changes"][uri],
+                json!([
+                    {"range": {"start": {"line": 0, "character": 18}, "end": {"line": 0, "character": 23}}, "newText": "renamed"},
+                    {"range": {"start": {"line": 1, "character": 8}, "end": {"line": 1, "character": 13}}, "newText": "renamed"}
+                ])
+            ),
+            _ => unreachable!(),
+        }
     }
 
     stdin
@@ -322,4 +443,135 @@ fn advertised_editor_features_respond_over_stdio() {
         .unwrap();
     drop(stdin);
     assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn workspace_symbols_and_call_hierarchy_have_exact_targets() {
+    let root = std::env::temp_dir().join(format!("stan-lsp-protocol-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path: PathBuf = root.join("functions.stan");
+    let source =
+        "functions { real helper(real x) { return x; } real outer(real y) { return helper(y); } }";
+    fs::write(&path, source).unwrap();
+    let uri = format!("file://{}", path.display());
+    let root_uri = format!("file://{}", root.display());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_stan-language-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "processId": null,
+                "capabilities": {},
+                "workspaceFolders": [{"uri": root_uri, "name": "fixture"}]
+            }
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+        ))
+        .unwrap();
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": uri, "languageId": "stan", "version": 1, "text": source}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "workspace/symbol",
+            "params": {"query": "helper"}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let workspace = read_frame(&mut stdout);
+    assert_eq!(
+        workspace["result"].as_array().unwrap().len(),
+        1,
+        "{workspace}"
+    );
+    assert_eq!(workspace["result"][0]["name"], "helper");
+    assert_eq!(
+        workspace["result"][0]["location"]["range"],
+        json!({"start": {"line": 0, "character": 17}, "end": {"line": 0, "character": 23}})
+    );
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 3, "method": "textDocument/prepareCallHierarchy",
+            "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 18}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let helper = read_frame(&mut stdout);
+    assert_eq!(helper["result"].as_array().unwrap().len(), 1);
+    assert_eq!(helper["result"][0]["name"], "helper");
+    let helper_item = helper["result"][0].clone();
+
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 4, "method": "callHierarchy/incomingCalls",
+            "params": {"item": helper_item}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let incoming = read_frame(&mut stdout);
+    assert_eq!(incoming["result"].as_array().unwrap().len(), 1);
+    assert_eq!(incoming["result"][0]["from"]["name"], "outer");
+    let helper_call = source.rfind("helper").unwrap() as u64;
+    assert_eq!(
+        incoming["result"][0]["fromRanges"],
+        json!([{"start": {"line": 0, "character": helper_call}, "end": {"line": 0, "character": helper_call + 6}}])
+    );
+
+    let outer_offset = source.find("outer").unwrap() as u64;
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 5, "method": "textDocument/prepareCallHierarchy",
+            "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": outer_offset + 1}}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let outer = read_frame(&mut stdout);
+    let outer_item = outer["result"][0].clone();
+    stdin
+        .write_all(&frame(json!({
+            "jsonrpc": "2.0", "id": 6, "method": "callHierarchy/outgoingCalls",
+            "params": {"item": outer_item}
+        })))
+        .unwrap();
+    stdin.flush().unwrap();
+    let outgoing = read_frame(&mut stdout);
+    assert_eq!(outgoing["result"].as_array().unwrap().len(), 1);
+    assert_eq!(outgoing["result"][0]["to"]["name"], "helper");
+
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "id": 7, "method": "shutdown", "params": null}),
+        ))
+        .unwrap();
+    stdin.flush().unwrap();
+    let _ = read_frame(&mut stdout);
+    stdin
+        .write_all(&frame(
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        ))
+        .unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    fs::remove_dir_all(root).unwrap();
 }

@@ -10,6 +10,9 @@ serde.workspace = true
 stan-token-derive = { path = "../stan-token-derive" }
 thiserror.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [[bench]]
 name = "analysis"
 harness = false

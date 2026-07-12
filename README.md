@@ -1,13 +1,15 @@
 # Stan Language Server
 
-This repository is the Rust foundation for a Stan language server. The current
-milestone provides a complete, versioned Stan 2.39 vocabulary and function
-signature catalog plus a growing Language Server Protocol analysis pipeline.
+This repository is a beta-focused Stan development suite built around a complete,
+versioned Stan 2.39 vocabulary and function signature catalog. Local analysis is
+responsive and conservative; stanc3 remains the semantic authority.
 The server tracks full-document updates, converts UTF-8 byte ranges to LSP UTF-16
 positions, builds a lossless recovery syntax model, and publishes lexical and
-structural diagnostics. It also provides program-block symbols, folding, semantic
-tokens, catalog hover/completion/signature help, native formatting, configurable
-lint infrastructure, and optional stanc3 validation on save.
+structural diagnostics. It also provides scoped symbols and references, folding,
+semantic tokens, hover/completion/signature help, native formatting, configurable
+lint infrastructure, user-defined probability functions, and optional stanc3
+validation on save. Partial semantic features and native formatting remain
+experimental until they pass the documented corpus gate.
 
 ## Workspace
 
@@ -25,8 +27,11 @@ supported version.
 ```text
 cargo build --workspace
 cargo test --workspace
+cargo test --doc --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo run -p xtask -- corpus check
 ```
 
 Run the server over stdio with:
@@ -43,9 +48,24 @@ cargo run -p stan-tools --bin stanfmt -- --check model.stan
 cargo run -p stan-tools --bin stanlint -- model.stan
 ```
 
-The VS Code client is under `editors/vscode`. See
-[architecture](docs/architecture.md), [configuration](docs/configuration.md), and
-[diagnostic codes](docs/diagnostics.md) for the extension contracts.
+The VS Code client is under `editors/vscode`. Start with the
+[repository map](docs/repository-map.md), [analysis pipeline](docs/analysis-pipeline.md),
+[semantic model](docs/semantic-model.md), [configuration](docs/configuration.md),
+and [diagnostic codes](docs/diagnostics.md).
+
+## Corpus validation
+
+Ordinary builds use a project-owned offline smoke corpus. Maintainers can fetch
+the checksum-pinned external Stan example corpus and compare formatting and local
+diagnostics with stanc3:
+
+```text
+cargo run -p xtask -- corpus fetch
+cargo run -p xtask -- corpus check --external --stanc /path/to/stanc --json corpus-report.json
+```
+
+See the [testing guide](docs/testing.md) and
+[release checklist](docs/release-checklist.md) for the beta-quality gates.
 
 ## Refresh the Stan catalog
 

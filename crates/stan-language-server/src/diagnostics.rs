@@ -1,10 +1,17 @@
+//! Conversion and conservative merging of shared diagnostics into LSP values.
+
+#![allow(
+    missing_docs,
+    reason = "adapter entry points mirror their explicit argument and return types"
+)]
+
 use stan_language::{Diagnostic as StanDiagnostic, DiagnosticSource, LintConfig, Severity, lint};
 use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Range,
 };
 
-use crate::document::Document;
+use crate::{document::Document, mapper::LspMapper};
 
 pub fn diagnostics(document: &Document) -> Vec<Diagnostic> {
     diagnostics_with_lints(document, &LintConfig::default())
@@ -83,6 +90,7 @@ pub fn to_lsp(document: &Document, diagnostic: StanDiagnostic) -> Option<Diagnos
                 DiagnosticSource::StanLsp => "stan-lsp",
                 DiagnosticSource::Stanc3 => "stanc3",
                 DiagnosticSource::StanLint => "stanlint",
+                DiagnosticSource::Workspace => "stan-workspace",
             }
             .to_owned(),
         ),
@@ -96,10 +104,7 @@ fn diagnostic_position(
     offset: u32,
     code: &str,
 ) -> Option<tower_lsp_server::ls_types::Position> {
-    match document
-        .line_index
-        .offset_to_position(&document.text, offset as usize)
-    {
+    match LspMapper::for_document(document).to_position(offset) {
         Ok(position) => Some(position),
         Err(error) => {
             tracing::error!(

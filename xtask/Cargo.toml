@@ -7,4 +7,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 stan-language = { path = "../crates/stan-language" }
