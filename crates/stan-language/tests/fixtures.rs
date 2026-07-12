@@ -95,7 +95,7 @@ fn incomplete_diagnostic_fixture_suppresses_uncertain_rules() {
 #[test]
 fn formatting_fixture_is_exact_and_idempotent() {
     let source = include_str!("fixtures/formatting/basic.stan");
-    let expected = include_str!("fixtures/formatting/basic.expected.stan");
+    let expected = include_str!("fixtures/formatting/basic.expected.stan").replace("\r\n", "\n");
     let formatted = format(
         &analyze_revision(source, Revision::default()),
         &FormatterConfig::default(),
