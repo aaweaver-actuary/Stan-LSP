@@ -1,0 +1,22 @@
+{
+  "blocks": [{ "kind": "Parameters", "range": [0, 66] }],
+  "compounds": [[11, 66]],
+  "variables": [
+    {
+      "range": [15, 40],
+      "type": { "text": "real<lower=0> ", "range": [15, 29] },
+      "declarators": [
+        { "range": [29, 34], "name": { "text": "sigma", "range": [29, 34] } },
+        { "range": [36, 39], "name": { "text": "tau", "range": [36, 39] } }
+      ]
+    },
+    {
+      "range": [43, 64],
+      "type": { "text": "real ", "range": [43, 48] },
+      "declarators": [{
+        "range": [48, 63],
+        "name": { "text": "initialized", "range": [48, 59] }
+      }]
+    }
+  ]
+}

@@ -9,7 +9,7 @@ pub mod scope;
 pub mod symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Internal consistency failure returned by [`SemanticModel::validate`].
+/// Internal consistency failure returned by [`model::SemanticModel::validate`].
 #[allow(
     missing_docs,
     reason = "variants precisely name each validated invariant"

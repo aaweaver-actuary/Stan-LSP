@@ -1,0 +1,21 @@
+{
+  "blocks": [{ "kind": "Model", "range": [0, 7] }],
+  "calls": [{
+    "range": [14, 21],
+    "callee": { "text": "normal", "range": [14, 20] },
+    "closing_paren": null,
+    "complete": false,
+    "declaration": false
+  }],
+  "compounds": [[6, 7]],
+  "diagnostics": [
+    { "code": "syntax.unclosed-delimiter", "range": [6, 7] },
+    { "code": "syntax.unclosed-delimiter", "range": [20, 21] }
+  ],
+  "sampling": [{
+    "range": [10, 21],
+    "distribution": { "text": "normal", "range": [14, 20] },
+    "closing_paren": null,
+    "complete": false
+  }]
+}
