@@ -1026,9 +1026,31 @@ impl Parser {
                     .copied()
                     .find(|candidate| *candidate > close)
                 else {
+                    // The for header is syntactically complete but no body follows.
+                    // Emit a ForStatement covering the header so typed queries see the loop.
+                    self.nodes.push(SyntaxNode {
+                        kind: SyntaxNodeKind::ForStatement,
+                        range: TextRange {
+                            start: self.tokens[index].range.start,
+                            end: self.tokens[close].range.end,
+                        },
+                        token_range: index..close.saturating_add(1),
+                        parent: Some(0),
+                    });
                     continue;
                 };
                 if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
+                    // The for header is syntactically complete but the next token is not
+                    // a `{` body.  Emit a ForStatement covering just the header.
+                    self.nodes.push(SyntaxNode {
+                        kind: SyntaxNodeKind::ForStatement,
+                        range: TextRange {
+                            start: self.tokens[index].range.start,
+                            end: self.tokens[close].range.end,
+                        },
+                        token_range: index..close.saturating_add(1),
+                        parent: Some(0),
+                    });
                     continue;
                 }
                 let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
@@ -1136,6 +1158,15 @@ impl Parser {
             {
                 continue;
             }
+            // An `=` between the statement start and the function-name identifier
+            // means this is an assignment with a call on the right-hand side
+            // (e.g. `real y = normal(...)`), not a function declaration.
+            if significant[start_position..position]
+                .iter()
+                .any(|candidate| self.tokens[*candidate].kind == SyntaxKind::Symbol(Symbol::Assign))
+            {
+                continue;
+            }
             let start = significant[start_position];
             let Some(close) = self.delimiter_pairs.get(&open).copied() else {
                 let end = last_source_token(&self.tokens, &significant[position..]).unwrap_or(open);
@@ -1155,9 +1186,31 @@ impl Parser {
                 continue;
             };
             let Some(brace) = significant.get(close_position + 1).copied() else {
+                // Parameter list is closed but no body follows.  Emit a body-less
+                // FunctionDeclaration so typed queries see the signature.
+                self.nodes.push(SyntaxNode {
+                    kind: SyntaxNodeKind::FunctionDeclaration,
+                    range: TextRange {
+                        start: self.tokens[start].range.start,
+                        end: self.tokens[close].range.end,
+                    },
+                    token_range: start..close.saturating_add(1),
+                    parent: Some(0),
+                });
                 continue;
             };
             if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
+                // The next token after the parameter list is not a `{` body.
+                // Emit a body-less FunctionDeclaration covering just the signature.
+                self.nodes.push(SyntaxNode {
+                    kind: SyntaxNodeKind::FunctionDeclaration,
+                    range: TextRange {
+                        start: self.tokens[start].range.start,
+                        end: self.tokens[close].range.end,
+                    },
+                    token_range: start..close.saturating_add(1),
+                    parent: Some(0),
+                });
                 continue;
             }
             let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
@@ -1205,8 +1258,8 @@ impl Parser {
                         .iter()
                         .any(|item| self.tokens[*item].kind == SyntaxKind::Symbol(Symbol::Tilde));
                     let contains_declaration = significant[statement_start..position]
-                        .iter()
-                        .any(|item| is_type_keyword(self.tokens[*item].kind));
+                        .first()
+                        .is_some_and(|item| is_type_keyword(self.tokens[*item].kind));
                     if contains_declaration
                         && !significant[statement_start..position]
                             .iter()
@@ -1282,8 +1335,8 @@ impl Parser {
                 .iter()
                 .any(|index| self.tokens[*index].kind == SyntaxKind::Symbol(Symbol::Tilde));
             let contains_declaration = tail
-                .iter()
-                .any(|index| is_type_keyword(self.tokens[*index].kind));
+                .first()
+                .is_some_and(|index| is_type_keyword(self.tokens[*index].kind));
             let overlaps_function = self.nodes.iter().any(|node| {
                 node.kind == SyntaxNodeKind::FunctionDeclaration
                     && node.range.start == self.tokens[start].range.start
@@ -1316,26 +1369,102 @@ fn last_source_token(tokens: &[Token], indices: &[usize]) -> Option<usize> {
 }
 
 fn top_level_expression_start(tokens: &[Token], indices: &[usize]) -> Option<usize> {
+    // Phase 1: skip a declaration type prefix so that `=` inside constraint
+    // syntax such as `real<lower=0, upper=1>` is not mistaken for the
+    // statement-level initializer.  Angle-bracket depth is tracked only while
+    // scanning the type prefix; after that phase we no longer count `<`/`>`.
+    let mut position = 0;
+    if indices
+        .first()
+        .is_some_and(|i| is_type_keyword(tokens[*i].kind))
+    {
+        position = skip_type_prefix(tokens, indices);
+        // Skip the declarator name (one identifier) that follows the type prefix.
+        if indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Identifier)
+        {
+            position += 1;
+        }
+    }
+
+    // Phase 2: scan for the top-level `=` or `~` using only paren/bracket
+    // depth.  We deliberately do not track angle brackets here because `<` and
+    // `>` are also ordinary comparison operators in Stan expressions, and an
+    // unmatched comparison would otherwise suppress recognition of a later `=`.
     let mut parens = 0usize;
     let mut brackets = 0usize;
-    let mut angles = 0usize;
-    for (position, index) in indices.iter().copied().enumerate() {
+    for (pos, index) in indices[position..].iter().copied().enumerate() {
         match tokens[index].kind {
             SyntaxKind::Symbol(Symbol::LeftParen) => parens += 1,
             SyntaxKind::Symbol(Symbol::RightParen) => parens = parens.saturating_sub(1),
             SyntaxKind::Symbol(Symbol::LeftBracket) => brackets += 1,
             SyntaxKind::Symbol(Symbol::RightBracket) => brackets = brackets.saturating_sub(1),
-            SyntaxKind::Symbol(Symbol::LessThan) => angles += 1,
-            SyntaxKind::Symbol(Symbol::GreaterThan) => angles = angles.saturating_sub(1),
-            SyntaxKind::Symbol(Symbol::Assign | Symbol::Tilde)
-                if parens == 0 && brackets == 0 && angles == 0 =>
-            {
-                return Some(position + 1);
+            SyntaxKind::Symbol(Symbol::Assign | Symbol::Tilde) if parens == 0 && brackets == 0 => {
+                return Some(position + pos + 1);
             }
             _ => {}
         }
     }
     None
+}
+
+/// Returns the index into `indices` immediately past the end of the leading
+/// declaration type prefix (type keyword + optional `<constraint>` + optional
+/// `[dimension]` groups, possibly chained for types like `array[] real`).
+///
+/// Angle brackets are tracked here — but **only** in this function, where their
+/// role as constraint delimiters is unambiguous — so that they are not counted
+/// as comparison operators in the expression scanning that follows.
+fn skip_type_prefix(tokens: &[Token], indices: &[usize]) -> usize {
+    let mut position = 0;
+    while position < indices.len() && is_type_keyword(tokens[indices[position]].kind) {
+        position += 1; // consume the type keyword itself
+
+        // Optional `<constraint>` immediately after the type keyword.
+        if indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Symbol(Symbol::LessThan))
+        {
+            position += 1; // consume `<`
+            let mut depth = 1usize;
+            while position < indices.len() && depth > 0 {
+                match tokens[indices[position]].kind {
+                    SyntaxKind::Symbol(Symbol::LessThan) => depth += 1,
+                    SyntaxKind::Symbol(Symbol::GreaterThan) => depth -= 1,
+                    _ => {}
+                }
+                position += 1;
+            }
+        }
+
+        // Optional `[dimension]` groups — may appear more than once.
+        while indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Symbol(Symbol::LeftBracket))
+        {
+            position += 1; // consume `[`
+            let mut depth = 1usize;
+            while position < indices.len() && depth > 0 {
+                match tokens[indices[position]].kind {
+                    SyntaxKind::Symbol(Symbol::LeftBracket) => depth += 1,
+                    SyntaxKind::Symbol(Symbol::RightBracket) => depth -= 1,
+                    _ => {}
+                }
+                position += 1;
+            }
+        }
+
+        // For chained type prefixes such as `array[] real`, the next token may
+        // itself be another type keyword; if so, loop to consume it too.
+        if !indices
+            .get(position)
+            .is_some_and(|i| is_type_keyword(tokens[*i].kind))
+        {
+            break;
+        }
+    }
+    position
 }
 
 fn is_trivia(kind: SyntaxKind) -> bool {
@@ -1716,6 +1845,98 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code.0 == "syntax.expected-expression")
+        );
+    }
+
+    #[test]
+    fn for_statement_with_complete_header_and_no_body_is_visible() {
+        // A complete `for (n in 1:2)` with no `{` body should still appear in
+        // typed queries rather than disappearing entirely.
+        let result = parse_source("model {\n  for (n in 1:2)\n}");
+        let stmt = result
+            .tree
+            .source_file()
+            .for_statements()
+            .next()
+            .expect("ForStatement should be visible with complete header and absent body");
+        assert_eq!(stmt.binder().unwrap().text(), "n");
+        assert!(stmt.body_range().is_none());
+    }
+
+    #[test]
+    fn function_declaration_with_complete_signature_and_no_body_is_visible() {
+        // A complete `real f(real x)` with no `{ body }` should still appear in
+        // typed queries (e.g. forward declarations or editing in progress).
+        let result = parse_source("functions {\n  real f(real x)\n}");
+        let func = result
+            .tree
+            .source_file()
+            .function_declarations()
+            .next()
+            .expect(
+                "FunctionDeclaration should be visible with complete signature and absent body",
+            );
+        assert_eq!(func.name().unwrap().text(), "f");
+        assert_eq!(func.return_type().unwrap().text().trim(), "real");
+        assert_eq!(func.parameters().len(), 1);
+        assert_eq!(func.parameters()[0].name().text(), "x");
+        assert!(func.body_range().is_none());
+    }
+
+    #[test]
+    fn call_inside_expression_is_not_misclassified_as_function_declaration() {
+        // `real y = normal(mu, sigma);` is a variable declaration with an
+        // initializer call, not a function declaration.
+        let result = parse_source("model { real y = normal(0, 1); }");
+        let funcs = result.tree.source_file().function_declarations().count();
+        assert_eq!(
+            funcs, 0,
+            "initializer call should not be a FunctionDeclaration"
+        );
+    }
+
+    #[test]
+    fn type_keyword_inside_call_does_not_create_spurious_variable_declaration() {
+        // `print(real x)` and `x = real` should not produce VariableDeclaration
+        // nodes, because a type keyword in the middle of a statement does not
+        // make the statement a declaration.
+        for source in ["model { print(real", "model { x = real;"] {
+            let result = parse_source(source);
+            let decls = result.tree.source_file().variable_declarations().count();
+            assert_eq!(
+                decls, 0,
+                "type keyword inside expression in {source:?} should not create a VariableDeclaration"
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_operators_do_not_suppress_top_level_assignment_or_sampling() {
+        // `<` and `>` as comparison operators must not be counted as type-constraint
+        // angle brackets, so a later `=` or `~` at the top level is still found.
+        let result = parse_source("model { real x; x = a < b; y[i < j] ~ normal(0, 1); }");
+        // The `x = a < b` assignment must produce an expression node.
+        assert!(
+            result
+                .tree
+                .nodes()
+                .iter()
+                .any(|node| node.kind == SyntaxNodeKind::Expression),
+            "assignment through comparison should produce an Expression node"
+        );
+        // The sampling statement `y[i < j] ~ normal(0, 1)` must be recognized.
+        let sampling = result.tree.source_file().sampling_statements().next();
+        assert!(
+            sampling.is_some(),
+            "sampling through index comparison should produce a SamplingStatement node"
+        );
+        // No spurious expression-error diagnostic should be emitted.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.0 == "syntax.expected-expression"),
+            "no expression error expected for valid comparison-containing statements"
         );
     }
 }

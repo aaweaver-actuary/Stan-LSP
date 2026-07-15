@@ -170,6 +170,16 @@ fixture!(
     "fixtures/parser/unicode/comments.stan",
     "fixtures/parser/unicode/comments.expected.json"
 );
+fixture!(
+    for_header_complete_body_absent,
+    "fixtures/parser/recovery/for-header-only.stan",
+    "fixtures/parser/recovery/for-header-only.expected.json"
+);
+fixture!(
+    function_signature_complete_body_absent,
+    "fixtures/parser/recovery/function-signature-only.stan",
+    "fixtures/parser/recovery/function-signature-only.expected.json"
+);
 
 #[test]
 fn exact_parser_fixtures_use_lf_line_endings() {
@@ -182,6 +192,8 @@ fn exact_parser_fixtures_use_lf_line_endings() {
         include_str!("fixtures/parser/recovery/declaration.stan"),
         include_str!("fixtures/parser/recovery/loop.stan"),
         include_str!("fixtures/parser/recovery/sampling.stan"),
+        include_str!("fixtures/parser/recovery/for-header-only.stan"),
+        include_str!("fixtures/parser/recovery/function-signature-only.stan"),
         include_str!("fixtures/parser/unicode/comments.stan"),
     ] {
         assert!(

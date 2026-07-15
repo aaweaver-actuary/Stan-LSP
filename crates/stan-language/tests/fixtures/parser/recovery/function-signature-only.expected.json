@@ -1,0 +1,24 @@
+{
+  "blocks": [{ "kind": "Functions", "range": [0, 30] }],
+  "calls": [{
+    "range": [19, 28],
+    "callee": { "text": "f", "range": [19, 20] },
+    "closing_paren": [27, 28],
+    "complete": true,
+    "declaration": true
+  }],
+  "compounds": [[10, 30]],
+  "diagnostics": [{ "code": "syntax.missing-semicolon", "range": [29, 29] }],
+  "functions": [{
+    "range": [14, 28],
+    "name": { "text": "f", "range": [19, 20] },
+    "return_type": { "text": "real ", "range": [14, 19] },
+    "parameters": [{
+      "range": [21, 27],
+      "name": { "text": "x", "range": [26, 27] },
+      "type": { "text": "real ", "range": [21, 26] },
+      "data_only": false
+    }],
+    "body": null
+  }]
+}

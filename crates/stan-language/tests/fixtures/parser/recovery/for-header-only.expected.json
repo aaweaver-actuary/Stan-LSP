@@ -1,0 +1,10 @@
+{
+  "blocks": [{ "kind": "Model", "range": [0, 26] }],
+  "compounds": [[6, 26]],
+  "diagnostics": [{ "code": "syntax.missing-semicolon", "range": [25, 25] }],
+  "loops": [{
+    "range": [10, 24],
+    "binder": { "text": "n", "range": [15, 16] },
+    "body": null
+  }]
+}
