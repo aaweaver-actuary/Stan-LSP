@@ -1,0 +1,5 @@
+# Exact parser fixture byte offsets assume LF line endings.
+# Force LF on all platforms so include_str! byte ranges match the
+# JSON sidecars on Linux, macOS, and Windows alike.
+crates/stan-language/tests/fixtures/**/*.stan text eol=lf
+crates/stan-language/tests/fixtures/**/*.json text eol=lf

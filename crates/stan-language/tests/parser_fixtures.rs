@@ -172,6 +172,23 @@ fixture!(
 );
 
 #[test]
+fn exact_parser_fixtures_use_lf_line_endings() {
+    for source in [
+        include_str!("fixtures/parser/program-blocks/valid.stan"),
+        include_str!("fixtures/parser/function-declarations/valid.stan"),
+        include_str!("fixtures/parser/variable-declarations/valid.stan"),
+        include_str!("fixtures/parser/expressions/valid.stan"),
+        include_str!("fixtures/parser/recovery/function.stan"),
+        include_str!("fixtures/parser/recovery/declaration.stan"),
+        include_str!("fixtures/parser/recovery/loop.stan"),
+        include_str!("fixtures/parser/recovery/sampling.stan"),
+        include_str!("fixtures/parser/unicode/comments.stan"),
+    ] {
+        assert!(!source.as_bytes().contains(&b'\r'));
+    }
+}
+
+#[test]
 fn deterministic_malformed_inputs_always_progress_and_reconstruct() {
     let cases = [
         "functions { real f(real",
