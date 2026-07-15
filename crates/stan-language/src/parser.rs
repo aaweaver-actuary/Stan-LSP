@@ -367,7 +367,17 @@ impl<'a> FunctionDeclaration<'a> {
             Symbol::LeftParen,
             Symbol::RightParen,
         )
-        .unwrap_or(indices.len());
+        .unwrap_or_else(|| {
+            indices
+                .iter()
+                .enumerate()
+                .skip(open_position + 1)
+                .find_map(|(position, index)| {
+                    (self.tree.tokens[*index].kind == SyntaxKind::Symbol(Symbol::LeftBrace))
+                        .then_some(position)
+                })
+                .unwrap_or(indices.len())
+        });
         split_top_level_indices(
             self.tree,
             &indices[open_position + 1..close_position],
