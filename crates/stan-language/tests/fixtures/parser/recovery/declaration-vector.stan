@@ -1,0 +1,2 @@
+parameters {
+  vector[N] beta
