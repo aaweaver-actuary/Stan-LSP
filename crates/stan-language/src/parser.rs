@@ -1021,46 +1021,29 @@ impl Parser {
                     });
                     continue;
                 };
-                let Some(brace) = significant
+                // Determine the end of the ForStatement: use the `{` body if present,
+                // otherwise the closing `)` of the header.
+                let brace_with_body = significant
                     .iter()
                     .copied()
                     .find(|candidate| *candidate > close)
-                else {
-                    // The for header is syntactically complete but no body follows.
-                    // Emit a ForStatement covering the header so typed queries see the loop.
-                    self.nodes.push(SyntaxNode {
-                        kind: SyntaxNodeKind::ForStatement,
-                        range: TextRange {
-                            start: self.tokens[index].range.start,
-                            end: self.tokens[close].range.end,
-                        },
-                        token_range: index..close.saturating_add(1),
-                        parent: Some(0),
-                    });
-                    continue;
+                    .filter(|b| self.tokens[*b].kind == SyntaxKind::Symbol(Symbol::LeftBrace));
+                let (node_end, token_end) = if let Some(brace) = brace_with_body {
+                    let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+                    (self.tokens[end].range.end, end.saturating_add(1))
+                } else {
+                    // Header is syntactically complete but body is absent (either no
+                    // next token, or the next token is not `{`).  Emit a header-only
+                    // ForStatement so typed queries see the loop.
+                    (self.tokens[close].range.end, close.saturating_add(1))
                 };
-                if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
-                    // The for header is syntactically complete but the next token is not
-                    // a `{` body.  Emit a ForStatement covering just the header.
-                    self.nodes.push(SyntaxNode {
-                        kind: SyntaxNodeKind::ForStatement,
-                        range: TextRange {
-                            start: self.tokens[index].range.start,
-                            end: self.tokens[close].range.end,
-                        },
-                        token_range: index..close.saturating_add(1),
-                        parent: Some(0),
-                    });
-                    continue;
-                }
-                let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
                 self.nodes.push(SyntaxNode {
                     kind: SyntaxNodeKind::ForStatement,
                     range: TextRange {
                         start: self.tokens[index].range.start,
-                        end: self.tokens[end].range.end,
+                        end: node_end,
                     },
-                    token_range: index..end.saturating_add(1),
+                    token_range: index..token_end,
                     parent: Some(0),
                 });
             }
@@ -1185,42 +1168,28 @@ impl Parser {
             else {
                 continue;
             };
-            let Some(brace) = significant.get(close_position + 1).copied() else {
-                // Parameter list is closed but no body follows.  Emit a body-less
+            // Determine the end of the FunctionDeclaration: use the `{` body if
+            // present, otherwise the closing `)` of the parameter list.
+            let brace_with_body = significant
+                .get(close_position + 1)
+                .copied()
+                .filter(|b| self.tokens[*b].kind == SyntaxKind::Symbol(Symbol::LeftBrace));
+            let (node_end, token_end) = if let Some(brace) = brace_with_body {
+                let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+                (self.tokens[end].range.end, end.saturating_add(1))
+            } else {
+                // Parameter list is closed but body is absent (either no next token,
+                // or the next token is not `{`).  Emit a body-less
                 // FunctionDeclaration so typed queries see the signature.
-                self.nodes.push(SyntaxNode {
-                    kind: SyntaxNodeKind::FunctionDeclaration,
-                    range: TextRange {
-                        start: self.tokens[start].range.start,
-                        end: self.tokens[close].range.end,
-                    },
-                    token_range: start..close.saturating_add(1),
-                    parent: Some(0),
-                });
-                continue;
+                (self.tokens[close].range.end, close.saturating_add(1))
             };
-            if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
-                // The next token after the parameter list is not a `{` body.
-                // Emit a body-less FunctionDeclaration covering just the signature.
-                self.nodes.push(SyntaxNode {
-                    kind: SyntaxNodeKind::FunctionDeclaration,
-                    range: TextRange {
-                        start: self.tokens[start].range.start,
-                        end: self.tokens[close].range.end,
-                    },
-                    token_range: start..close.saturating_add(1),
-                    parent: Some(0),
-                });
-                continue;
-            }
-            let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
             self.nodes.push(SyntaxNode {
                 kind: SyntaxNodeKind::FunctionDeclaration,
                 range: TextRange {
                     start: self.tokens[start].range.start,
-                    end: self.tokens[end].range.end,
+                    end: node_end,
                 },
-                token_range: start..end.saturating_add(1),
+                token_range: start..token_end,
                 parent: Some(0),
             });
         }
@@ -1394,14 +1363,14 @@ fn top_level_expression_start(tokens: &[Token], indices: &[usize]) -> Option<usi
     // unmatched comparison would otherwise suppress recognition of a later `=`.
     let mut parens = 0usize;
     let mut brackets = 0usize;
-    for (pos, index) in indices[position..].iter().copied().enumerate() {
+    for (offset, index) in indices[position..].iter().copied().enumerate() {
         match tokens[index].kind {
             SyntaxKind::Symbol(Symbol::LeftParen) => parens += 1,
             SyntaxKind::Symbol(Symbol::RightParen) => parens = parens.saturating_sub(1),
             SyntaxKind::Symbol(Symbol::LeftBracket) => brackets += 1,
             SyntaxKind::Symbol(Symbol::RightBracket) => brackets = brackets.saturating_sub(1),
             SyntaxKind::Symbol(Symbol::Assign | Symbol::Tilde) if parens == 0 && brackets == 0 => {
-                return Some(position + pos + 1);
+                return Some(position + offset + 1);
             }
             _ => {}
         }
