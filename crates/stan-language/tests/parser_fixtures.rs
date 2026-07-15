@@ -184,7 +184,11 @@ fn exact_parser_fixtures_use_lf_line_endings() {
         include_str!("fixtures/parser/recovery/sampling.stan"),
         include_str!("fixtures/parser/unicode/comments.stan"),
     ] {
-        assert!(!source.as_bytes().contains(&b'\r'));
+        assert!(
+            !source.as_bytes().contains(&b'\r'),
+            "fixture source contains \\r bytes; exact byte-offset sidecars require LF line endings \
+             (see .gitattributes and crates/stan-language/tests/fixtures/README.md)"
+        );
     }
 }
 
