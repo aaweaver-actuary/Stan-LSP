@@ -1,0 +1,22 @@
+{
+  "blocks": [{ "kind": "Model", "range": [0, 76] }],
+  "calls": [{
+    "range": [35, 55],
+    "callee": { "text": "normal", "range": [35, 41] },
+    "closing_paren": [54, 55],
+    "complete": true,
+    "declaration": false
+  }],
+  "compounds": [[6, 76], [25, 74]],
+  "loops": [{
+    "range": [10, 74],
+    "binder": { "text": "n", "range": [15, 16] },
+    "body": [25, 74]
+  }],
+  "sampling": [{
+    "range": [31, 56],
+    "distribution": { "text": "normal", "range": [35, 41] },
+    "closing_paren": [54, 55],
+    "complete": true
+  }]
+}

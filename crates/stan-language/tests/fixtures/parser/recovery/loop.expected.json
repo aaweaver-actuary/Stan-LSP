@@ -1,0 +1,13 @@
+{
+  "blocks": [{ "kind": "Model", "range": [0, 7] }],
+  "compounds": [[6, 7]],
+  "diagnostics": [
+    { "code": "syntax.unclosed-delimiter", "range": [6, 7] },
+    { "code": "syntax.unclosed-delimiter", "range": [14, 15] }
+  ],
+  "loops": [{
+    "range": [10, 19],
+    "binder": { "text": "n", "range": [15, 16] },
+    "body": null
+  }]
+}

@@ -85,6 +85,9 @@ impl SyntaxTree {
 
 #[derive(Debug, Clone, Copy)]
 /// Typed root view used to enumerate supported syntax constructs.
+///
+/// Iterators return constructs in UTF-8 source order. Recovery may omit a
+/// construct that cannot be identified without guessing its grammar role.
 pub struct SourceFile<'a> {
     tree: &'a SyntaxTree,
 }
@@ -106,7 +109,11 @@ impl<'a> SourceFile<'a> {
             })
     }
 
-    /// Enumerates structured user-function declarations.
+    /// Enumerates recognized user-function declarations in source order.
+    ///
+    /// A declaration with an unterminated parameter list is retained when its
+    /// return type and name are recognizable. Its optional accessors then
+    /// report only the structure that is actually present.
     pub fn function_declarations(self) -> impl Iterator<Item = FunctionDeclaration<'a>> {
         nodes_of_kind(self.tree, SyntaxNodeKind::FunctionDeclaration).map(|index| {
             FunctionDeclaration {
@@ -116,7 +123,7 @@ impl<'a> SourceFile<'a> {
         })
     }
 
-    /// Enumerates variable declarations.
+    /// Enumerates complete and recoverable variable declarations in source order.
     pub fn variable_declarations(self) -> impl Iterator<Item = VariableDeclaration<'a>> {
         nodes_of_kind(self.tree, SyntaxNodeKind::VariableDeclaration).map(|index| {
             VariableDeclaration {
@@ -126,7 +133,7 @@ impl<'a> SourceFile<'a> {
         })
     }
 
-    /// Enumerates `for` statements with recognized binders and bodies.
+    /// Enumerates `for` statements with recognized binders and optional bodies.
     pub fn for_statements(self) -> impl Iterator<Item = ForStatement<'a>> {
         nodes_of_kind(self.tree, SyntaxNodeKind::ForStatement).map(|index| ForStatement {
             tree: self.tree,
@@ -150,7 +157,7 @@ impl<'a> SourceFile<'a> {
         })
     }
 
-    /// Enumerates semicolon-terminated sampling statements.
+    /// Enumerates sampling statements, including a final incomplete statement.
     pub fn sampling_statements(self) -> impl Iterator<Item = SamplingStatement<'a>> {
         nodes_of_kind(self.tree, SyntaxNodeKind::SamplingStatement).map(|index| SamplingStatement {
             tree: self.tree,
@@ -161,6 +168,9 @@ impl<'a> SourceFile<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// Typed program-block header and range.
+///
+/// The range uses UTF-8 byte offsets and ends at the opening brace when the
+/// block body is unterminated.
 pub struct ProgramBlock<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -200,6 +210,8 @@ impl<'a> NameRef<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// Borrowed type spelling retained exactly as written.
+///
+/// Ranges use UTF-8 byte offsets and may include constraints or dimensions.
 pub struct TypeSyntax<'a> {
     tree: &'a SyntaxTree,
     range: TextRange,
@@ -219,6 +231,10 @@ impl<'a> TypeSyntax<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// One name introduced by a variable declaration.
+///
+/// Declarators are returned in source order. The range includes any dimensions
+/// or initializer belonging to this declarator, but excludes the separating
+/// comma and terminating semicolon.
 pub struct Declarator<'a> {
     tree: &'a SyntaxTree,
     range: TextRange,
@@ -242,6 +258,10 @@ impl<'a> Declarator<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// Structured function parameter, including qualifier and type spelling.
+///
+/// Parameters that do not yet contain both a recognizable type and name are
+/// omitted from [`FunctionDeclaration::parameters`]. Returned ranges use UTF-8
+/// byte offsets and parameters remain in source order.
 pub struct FunctionParameter<'a> {
     tree: &'a SyntaxTree,
     range: TextRange,
@@ -279,7 +299,10 @@ impl<'a> FunctionParameter<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Typed view of a complete user-defined function declaration.
+/// Recovery-safe typed view of a recognized user-defined function declaration.
+///
+/// The name, return type, complete parameters, and body are independently
+/// optional while the user is editing. All ranges use UTF-8 byte offsets.
 pub struct FunctionDeclaration<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -317,7 +340,7 @@ impl<'a> FunctionDeclaration<'a> {
         })
     }
 
-    /// Returns structured parameters in declaration order.
+    /// Returns structurally complete parameters in source order.
     pub fn parameters(self) -> Vec<FunctionParameter<'a>> {
         let indices = significant_node_tokens(self.tree, self.index);
         let Some(name_position) = indices.iter().position(|index| {
@@ -337,15 +360,24 @@ impl<'a> FunctionDeclaration<'a> {
             return Vec::new();
         };
         let open_position = name_position + 1;
-        let Some(close_position) = matching_position(
+        let close_position = matching_position(
             self.tree,
             &indices,
             open_position,
             Symbol::LeftParen,
             Symbol::RightParen,
-        ) else {
-            return Vec::new();
-        };
+        )
+        .unwrap_or_else(|| {
+            indices
+                .iter()
+                .enumerate()
+                .skip(open_position + 1)
+                .find_map(|(position, index)| {
+                    (self.tree.tokens[*index].kind == SyntaxKind::Symbol(Symbol::LeftBrace))
+                        .then_some(position)
+                })
+                .unwrap_or(indices.len())
+        });
         split_top_level_indices(
             self.tree,
             &indices[open_position + 1..close_position],
@@ -377,14 +409,17 @@ impl<'a> FunctionDeclaration<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Typed variable declaration view.
+/// Recovery-safe typed variable declaration view.
+///
+/// A final declaration without a semicolon may still be represented. Missing
+/// names produce no declarators, and all ranges use UTF-8 byte offsets.
 pub struct VariableDeclaration<'a> {
     tree: &'a SyntaxTree,
     index: usize,
 }
 
 impl<'a> VariableDeclaration<'a> {
-    /// Returns the complete declaration range, including semicolon.
+    /// Returns the recognized declaration range, including a semicolon if present.
     pub fn range(self) -> TextRange {
         self.tree.nodes[self.index].range
     }
@@ -402,33 +437,54 @@ impl<'a> VariableDeclaration<'a> {
         })
     }
 
-    /// Returns names introduced by this declaration.
+    /// Returns names introduced by this declaration in source order.
     pub fn declarators(self) -> Vec<Declarator<'a>> {
         let indices = significant_node_tokens(self.tree, self.index);
         let Some(name_position) = declaration_name_position(self.tree, &indices) else {
             return Vec::new();
         };
-        let name_index = indices[name_position];
-        vec![Declarator {
-            tree: self.tree,
-            range: TextRange {
-                start: self.tree.tokens[name_index].range.start,
-                end: self.tree.nodes[self.index].range.end,
-            },
-            name_range: self.tree.tokens[name_index].range,
-        }]
+        split_top_level_indices(
+            self.tree,
+            &indices[name_position..]
+                .iter()
+                .copied()
+                .filter(|index| {
+                    self.tree.tokens[*index].kind != SyntaxKind::Symbol(Symbol::Semicolon)
+                })
+                .collect::<Vec<_>>(),
+            Symbol::Comma,
+        )
+        .into_iter()
+        .filter_map(|segment| {
+            let name_index = segment
+                .iter()
+                .copied()
+                .find(|index| self.tree.tokens[*index].kind == SyntaxKind::Identifier)?;
+            Some(Declarator {
+                tree: self.tree,
+                range: TextRange {
+                    start: self.tree.tokens[*segment.first()?].range.start,
+                    end: self.tree.tokens[*segment.last()?].range.end,
+                },
+                name_range: self.tree.tokens[name_index].range,
+            })
+        })
+        .collect()
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Typed `for` statement with a scoped binder.
+/// Recovery-safe typed `for` statement with a scoped binder.
+///
+/// The binder and body may be absent on incomplete input. Ranges use UTF-8 byte
+/// offsets.
 pub struct ForStatement<'a> {
     tree: &'a SyntaxTree,
     index: usize,
 }
 
 impl<'a> ForStatement<'a> {
-    /// Returns the complete loop range.
+    /// Returns the recognized loop range.
     pub fn range(self) -> TextRange {
         self.tree.nodes[self.index].range
     }
@@ -469,6 +525,8 @@ impl<'a> ForStatement<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// Typed brace-delimited compound statement.
+///
+/// An unmatched opening brace is represented by its one-byte UTF-8 range.
 pub struct CompoundStatement<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -483,6 +541,9 @@ impl CompoundStatement<'_> {
 
 #[derive(Debug, Clone, Copy)]
 /// Typed function call, which may be incomplete during editing.
+///
+/// Missing closing delimiters are reported through [`Self::is_complete`]
+/// rather than synthesized. Ranges use UTF-8 byte offsets.
 pub struct CallExpression<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -539,6 +600,9 @@ impl<'a> CallExpression<'a> {
 
 #[derive(Debug, Clone, Copy)]
 /// Typed sampling statement, which may retain incomplete inner syntax.
+///
+/// The final statement may lack both its closing parenthesis and semicolon.
+/// Ranges use UTF-8 byte offsets.
 pub struct SamplingStatement<'a> {
     tree: &'a SyntaxTree,
     index: usize,
@@ -954,26 +1018,42 @@ impl Parser {
                     continue;
                 }
                 let Some(close) = self.delimiter_pairs.get(&open).copied() else {
+                    let end =
+                        last_source_token(&self.tokens, &significant[position..]).unwrap_or(open);
+                    self.nodes.push(SyntaxNode {
+                        kind: SyntaxNodeKind::ForStatement,
+                        range: TextRange {
+                            start: self.tokens[index].range.start,
+                            end: self.tokens[end].range.end,
+                        },
+                        token_range: index..end.saturating_add(1),
+                        parent: Some(0),
+                    });
                     continue;
                 };
-                let Some(brace) = significant
+                // Determine the end of the ForStatement: use the `{` body if present,
+                // otherwise the closing `)` of the header.
+                let brace_with_body = significant
                     .iter()
                     .copied()
                     .find(|candidate| *candidate > close)
-                else {
-                    continue;
+                    .filter(|b| self.tokens[*b].kind == SyntaxKind::Symbol(Symbol::LeftBrace));
+                let (node_end, token_end) = if let Some(brace) = brace_with_body {
+                    let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+                    (self.tokens[end].range.end, end.saturating_add(1))
+                } else {
+                    // Header is syntactically complete but body is absent (either no
+                    // next token, or the next token is not `{`).  Emit a header-only
+                    // ForStatement so typed queries see the loop.
+                    (self.tokens[close].range.end, close.saturating_add(1))
                 };
-                if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
-                    continue;
-                }
-                let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
                 self.nodes.push(SyntaxNode {
                     kind: SyntaxNodeKind::ForStatement,
                     range: TextRange {
                         start: self.tokens[index].range.start,
-                        end: self.tokens[end].range.end,
+                        end: node_end,
                     },
-                    token_range: index..end.saturating_add(1),
+                    token_range: index..token_end,
                     parent: Some(0),
                 });
             }
@@ -1054,19 +1134,6 @@ impl Parser {
             if self.tokens[open].kind != SyntaxKind::Symbol(Symbol::LeftParen) {
                 continue;
             }
-            let Some(close) = self.delimiter_pairs.get(&open).copied() else {
-                continue;
-            };
-            let Some(close_position) = significant.iter().position(|candidate| *candidate == close)
-            else {
-                continue;
-            };
-            let Some(brace) = significant.get(close_position + 1).copied() else {
-                continue;
-            };
-            if self.tokens[brace].kind != SyntaxKind::Symbol(Symbol::LeftBrace) {
-                continue;
-            }
             let start_position = significant[..position]
                 .iter()
                 .rposition(|candidate| {
@@ -1084,15 +1151,55 @@ impl Parser {
             {
                 continue;
             }
+            // An `=` between the statement start and the function-name identifier
+            // means this is an assignment with a call on the right-hand side
+            // (e.g. `real y = normal(...)`), not a function declaration.
+            if significant[start_position..position]
+                .iter()
+                .any(|candidate| self.tokens[*candidate].kind == SyntaxKind::Symbol(Symbol::Assign))
+            {
+                continue;
+            }
             let start = significant[start_position];
-            let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+            let Some(close) = self.delimiter_pairs.get(&open).copied() else {
+                let end = last_source_token(&self.tokens, &significant[position..]).unwrap_or(open);
+                self.nodes.push(SyntaxNode {
+                    kind: SyntaxNodeKind::FunctionDeclaration,
+                    range: TextRange {
+                        start: self.tokens[start].range.start,
+                        end: self.tokens[end].range.end,
+                    },
+                    token_range: start..end.saturating_add(1),
+                    parent: Some(0),
+                });
+                continue;
+            };
+            let Some(close_position) = significant.iter().position(|candidate| *candidate == close)
+            else {
+                continue;
+            };
+            // Determine the end of the FunctionDeclaration: use the `{` body if
+            // present, otherwise the closing `)` of the parameter list.
+            let brace_with_body = significant
+                .get(close_position + 1)
+                .copied()
+                .filter(|b| self.tokens[*b].kind == SyntaxKind::Symbol(Symbol::LeftBrace));
+            let (node_end, token_end) = if let Some(brace) = brace_with_body {
+                let end = self.delimiter_pairs.get(&brace).copied().unwrap_or(brace);
+                (self.tokens[end].range.end, end.saturating_add(1))
+            } else {
+                // Parameter list is closed but body is absent (either no next token,
+                // or the next token is not `{`).  Emit a body-less
+                // FunctionDeclaration so typed queries see the signature.
+                (self.tokens[close].range.end, close.saturating_add(1))
+            };
             self.nodes.push(SyntaxNode {
                 kind: SyntaxNodeKind::FunctionDeclaration,
                 range: TextRange {
                     start: self.tokens[start].range.start,
-                    end: self.tokens[end].range.end,
+                    end: node_end,
                 },
-                token_range: start..end.saturating_add(1),
+                token_range: start..token_end,
                 parent: Some(0),
             });
         }
@@ -1130,8 +1237,8 @@ impl Parser {
                         .iter()
                         .any(|item| self.tokens[*item].kind == SyntaxKind::Symbol(Symbol::Tilde));
                     let contains_declaration = significant[statement_start..position]
-                        .iter()
-                        .any(|item| is_type_keyword(self.tokens[*item].kind));
+                        .first()
+                        .is_some_and(|item| is_type_keyword(self.tokens[*item].kind));
                     if contains_declaration
                         && !significant[statement_start..position]
                             .iter()
@@ -1161,15 +1268,11 @@ impl Parser {
                         token_range: start..index + 1,
                         parent: Some(0),
                     });
-                    if let Some(expression_start) = significant[statement_start..position]
-                        .iter()
-                        .position(|item| {
-                            matches!(
-                                self.tokens[*item].kind,
-                                SyntaxKind::Symbol(Symbol::Assign | Symbol::Tilde)
-                            )
-                        })
-                        .map(|relative| statement_start + relative + 1)
+                    if let Some(expression_start) = top_level_expression_start(
+                        &self.tokens,
+                        &significant[statement_start..position],
+                    )
+                    .map(|relative| statement_start + relative)
                     {
                         if let Some(expression) = significant.get(expression_start).copied() {
                             if let Err(range) = parse_expression_pratt(
@@ -1198,7 +1301,149 @@ impl Parser {
                 _ => {}
             }
         }
+        let tail = &significant[statement_start..];
+        if let (Some(start), Some(end)) =
+            (tail.first().copied(), last_source_token(&self.tokens, tail))
+        {
+            let tail = tail
+                .iter()
+                .copied()
+                .take_while(|index| *index <= end)
+                .collect::<Vec<_>>();
+            let contains_sampling = tail
+                .iter()
+                .any(|index| self.tokens[*index].kind == SyntaxKind::Symbol(Symbol::Tilde));
+            let contains_declaration = tail
+                .first()
+                .is_some_and(|index| is_type_keyword(self.tokens[*index].kind));
+            let overlaps_function = self.nodes.iter().any(|node| {
+                node.kind == SyntaxNodeKind::FunctionDeclaration
+                    && node.range.start == self.tokens[start].range.start
+            });
+            if contains_sampling || (contains_declaration && !overlaps_function) {
+                self.nodes.push(SyntaxNode {
+                    kind: if contains_sampling {
+                        SyntaxNodeKind::SamplingStatement
+                    } else {
+                        SyntaxNodeKind::VariableDeclaration
+                    },
+                    range: TextRange {
+                        start: self.tokens[start].range.start,
+                        end: self.tokens[end].range.end,
+                    },
+                    token_range: start..end.saturating_add(1),
+                    parent: Some(0),
+                });
+            }
+        }
     }
+}
+
+fn last_source_token(tokens: &[Token], indices: &[usize]) -> Option<usize> {
+    indices
+        .iter()
+        .copied()
+        .rev()
+        .find(|index| tokens[*index].kind != SyntaxKind::EndOfFile)
+}
+
+fn top_level_expression_start(tokens: &[Token], indices: &[usize]) -> Option<usize> {
+    // Phase 1: skip a declaration type prefix so that `=` inside constraint
+    // syntax such as `real<lower=0, upper=1>` is not mistaken for the
+    // statement-level initializer.  Angle-bracket depth is tracked only while
+    // scanning the type prefix; after that phase we no longer count `<`/`>`.
+    let mut position = 0;
+    if indices
+        .first()
+        .is_some_and(|i| is_type_keyword(tokens[*i].kind))
+    {
+        position = skip_type_prefix(tokens, indices);
+        // Skip the declarator name (one identifier) that follows the type prefix.
+        if indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Identifier)
+        {
+            position += 1;
+        }
+    }
+
+    // Phase 2: scan for the top-level `=` or `~` using only paren/bracket
+    // depth.  We deliberately do not track angle brackets here because `<` and
+    // `>` are also ordinary comparison operators in Stan expressions, and an
+    // unmatched comparison would otherwise suppress recognition of a later `=`.
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    for (offset, index) in indices[position..].iter().copied().enumerate() {
+        match tokens[index].kind {
+            SyntaxKind::Symbol(Symbol::LeftParen) => parens += 1,
+            SyntaxKind::Symbol(Symbol::RightParen) => parens = parens.saturating_sub(1),
+            SyntaxKind::Symbol(Symbol::LeftBracket) => brackets += 1,
+            SyntaxKind::Symbol(Symbol::RightBracket) => brackets = brackets.saturating_sub(1),
+            SyntaxKind::Symbol(Symbol::Assign | Symbol::Tilde) if parens == 0 && brackets == 0 => {
+                return Some(position + offset + 1);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Returns the index into `indices` immediately past the end of the leading
+/// declaration type prefix (type keyword + optional `<constraint>` + optional
+/// `[dimension]` groups, possibly chained for types like `array[] real`).
+///
+/// Angle brackets are tracked here — but **only** in this function, where their
+/// role as constraint delimiters is unambiguous — so that they are not counted
+/// as comparison operators in the expression scanning that follows.
+fn skip_type_prefix(tokens: &[Token], indices: &[usize]) -> usize {
+    let mut position = 0;
+    while position < indices.len() && is_type_keyword(tokens[indices[position]].kind) {
+        position += 1; // consume the type keyword itself
+
+        // Optional `<constraint>` immediately after the type keyword.
+        if indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Symbol(Symbol::LessThan))
+        {
+            position += 1; // consume `<`
+            let mut depth = 1usize;
+            while position < indices.len() && depth > 0 {
+                match tokens[indices[position]].kind {
+                    SyntaxKind::Symbol(Symbol::LessThan) => depth += 1,
+                    SyntaxKind::Symbol(Symbol::GreaterThan) => depth -= 1,
+                    _ => {}
+                }
+                position += 1;
+            }
+        }
+
+        // Optional `[dimension]` groups — may appear more than once.
+        while indices
+            .get(position)
+            .is_some_and(|i| tokens[*i].kind == SyntaxKind::Symbol(Symbol::LeftBracket))
+        {
+            position += 1; // consume `[`
+            let mut depth = 1usize;
+            while position < indices.len() && depth > 0 {
+                match tokens[indices[position]].kind {
+                    SyntaxKind::Symbol(Symbol::LeftBracket) => depth += 1,
+                    SyntaxKind::Symbol(Symbol::RightBracket) => depth -= 1,
+                    _ => {}
+                }
+                position += 1;
+            }
+        }
+
+        // For chained type prefixes such as `array[] real`, the next token may
+        // itself be another type keyword; if so, loop to consume it too.
+        if !indices
+            .get(position)
+            .is_some_and(|i| is_type_keyword(tokens[*i].kind))
+        {
+            break;
+        }
+    }
+    position
 }
 
 fn is_trivia(kind: SyntaxKind) -> bool {
@@ -1297,10 +1542,7 @@ impl ExpressionParser<'_> {
             _ => return Err(token.range),
         }
 
-        loop {
-            let Some(next) = self.peek() else {
-                break;
-            };
+        while let Some(next) = self.peek() {
             match next.kind {
                 SyntaxKind::Symbol(Symbol::LeftParen) => {
                     self.bump();
@@ -1582,6 +1824,98 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code.0 == "syntax.expected-expression")
+        );
+    }
+
+    #[test]
+    fn for_statement_with_complete_header_and_no_body_is_visible() {
+        // A complete `for (n in 1:2)` with no `{` body should still appear in
+        // typed queries rather than disappearing entirely.
+        let result = parse_source("model {\n  for (n in 1:2)\n}");
+        let stmt = result
+            .tree
+            .source_file()
+            .for_statements()
+            .next()
+            .expect("ForStatement should be visible with complete header and absent body");
+        assert_eq!(stmt.binder().unwrap().text(), "n");
+        assert!(stmt.body_range().is_none());
+    }
+
+    #[test]
+    fn function_declaration_with_complete_signature_and_no_body_is_visible() {
+        // A complete `real f(real x)` with no `{ body }` should still appear in
+        // typed queries (e.g. forward declarations or editing in progress).
+        let result = parse_source("functions {\n  real f(real x)\n}");
+        let func = result
+            .tree
+            .source_file()
+            .function_declarations()
+            .next()
+            .expect(
+                "FunctionDeclaration should be visible with complete signature and absent body",
+            );
+        assert_eq!(func.name().unwrap().text(), "f");
+        assert_eq!(func.return_type().unwrap().text().trim(), "real");
+        assert_eq!(func.parameters().len(), 1);
+        assert_eq!(func.parameters()[0].name().text(), "x");
+        assert!(func.body_range().is_none());
+    }
+
+    #[test]
+    fn call_inside_expression_is_not_misclassified_as_function_declaration() {
+        // `real y = normal(mu, sigma);` is a variable declaration with an
+        // initializer call, not a function declaration.
+        let result = parse_source("model { real y = normal(0, 1); }");
+        let funcs = result.tree.source_file().function_declarations().count();
+        assert_eq!(
+            funcs, 0,
+            "initializer call should not be a FunctionDeclaration"
+        );
+    }
+
+    #[test]
+    fn type_keyword_inside_call_does_not_create_spurious_variable_declaration() {
+        // `print(real x)` and `x = real` should not produce VariableDeclaration
+        // nodes, because a type keyword in the middle of a statement does not
+        // make the statement a declaration.
+        for source in ["model { print(real", "model { x = real;"] {
+            let result = parse_source(source);
+            let decls = result.tree.source_file().variable_declarations().count();
+            assert_eq!(
+                decls, 0,
+                "type keyword inside expression in {source:?} should not create a VariableDeclaration"
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_operators_do_not_suppress_top_level_assignment_or_sampling() {
+        // `<` and `>` as comparison operators must not be counted as type-constraint
+        // angle brackets, so a later `=` or `~` at the top level is still found.
+        let result = parse_source("model { real x; x = a < b; y[i < j] ~ normal(0, 1); }");
+        // The `x = a < b` assignment must produce an expression node.
+        assert!(
+            result
+                .tree
+                .nodes()
+                .iter()
+                .any(|node| node.kind == SyntaxNodeKind::Expression),
+            "assignment through comparison should produce an Expression node"
+        );
+        // The sampling statement `y[i < j] ~ normal(0, 1)` must be recognized.
+        let sampling = result.tree.source_file().sampling_statements().next();
+        assert!(
+            sampling.is_some(),
+            "sampling through index comparison should produce a SamplingStatement node"
+        );
+        // No spurious expression-error diagnostic should be emitted.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.0 == "syntax.expected-expression"),
+            "no expression error expected for valid comparison-containing statements"
         );
     }
 }

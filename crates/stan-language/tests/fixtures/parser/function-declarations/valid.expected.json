@@ -1,0 +1,31 @@
+{
+  "blocks": [{ "kind": "Functions", "range": [0, 83] }],
+  "calls": [{
+    "range": [27, 61],
+    "callee": { "text": "f", "range": [27, 28] },
+    "closing_paren": [60, 61],
+    "complete": true,
+    "declaration": true
+  }],
+  "compounds": [[10, 83], [62, 81]],
+  "functions": [{
+    "range": [14, 81],
+    "name": { "text": "f", "range": [27, 28] },
+    "return_type": { "text": "array[] real ", "range": [14, 27] },
+    "parameters": [
+      {
+        "range": [29, 40],
+        "name": { "text": "x", "range": [39, 40] },
+        "type": { "text": "real ", "range": [34, 39] },
+        "data_only": true
+      },
+      {
+        "range": [42, 60],
+        "name": { "text": "y", "range": [59, 60] },
+        "type": { "text": "tuple(real, int) ", "range": [42, 59] },
+        "data_only": false
+      }
+    ],
+    "body": [62, 81]
+  }]
+}

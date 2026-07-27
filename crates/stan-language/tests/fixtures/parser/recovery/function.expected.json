@@ -1,0 +1,27 @@
+{
+  "blocks": [{ "kind": "Functions", "range": [0, 11] }],
+  "calls": [{
+    "range": [19, 21],
+    "callee": { "text": "f", "range": [19, 20] },
+    "closing_paren": null,
+    "complete": false,
+    "declaration": true
+  }],
+  "compounds": [[10, 11]],
+  "diagnostics": [
+    { "code": "syntax.unclosed-delimiter", "range": [10, 11] },
+    { "code": "syntax.unclosed-delimiter", "range": [20, 21] }
+  ],
+  "functions": [{
+    "range": [14, 33],
+    "name": { "text": "f", "range": [19, 20] },
+    "return_type": { "text": "real ", "range": [14, 19] },
+    "parameters": [{
+      "range": [21, 32],
+      "name": { "text": "x", "range": [31, 32] },
+      "type": { "text": "real ", "range": [26, 31] },
+      "data_only": true
+    }],
+    "body": null
+  }]
+}

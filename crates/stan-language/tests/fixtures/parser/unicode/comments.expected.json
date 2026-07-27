@@ -1,0 +1,28 @@
+{
+  "blocks": [
+    { "kind": "Data", "range": [0, 27] },
+    { "kind": "Model", "range": [28, 92] }
+  ],
+  "calls": [{
+    "range": [56, 74],
+    "callee": { "text": "custom", "range": [56, 62] },
+    "closing_paren": [73, 74],
+    "complete": true,
+    "declaration": false
+  }],
+  "compounds": [[14, 27], [48, 92]],
+  "sampling": [{
+    "range": [52, 75],
+    "distribution": { "text": "custom", "range": [56, 62] },
+    "closing_paren": [73, 74],
+    "complete": true
+  }],
+  "variables": [{
+    "range": [18, 25],
+    "type": { "text": "real ", "range": [18, 23] },
+    "declarators": [{
+      "range": [23, 24],
+      "name": { "text": "y", "range": [23, 24] }
+    }]
+  }]
+}

@@ -1,0 +1,15 @@
+{
+  "blocks": [
+    { "kind": "Data", "range": [0, 18] },
+    { "kind": "Model", "range": [19, 28] }
+  ],
+  "compounds": [[5, 18], [25, 28]],
+  "variables": [{
+    "range": [9, 16],
+    "type": { "text": "real ", "range": [9, 14] },
+    "declarators": [{
+      "range": [14, 15],
+      "name": { "text": "y", "range": [14, 15] }
+    }]
+  }]
+}

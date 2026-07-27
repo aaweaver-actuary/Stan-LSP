@@ -16,3 +16,8 @@ Tests compare ordered normalized output. They must not depend on hash-map order.
 Every fixed defect receives a focused regression test. Normal pull-request tests
 use the checked-in smoke corpus; scheduled and release jobs fetch the pinned
 external corpus and matching stanc3 compiler.
+
+Typed parser wrapper contracts and their fixture coverage are recorded in
+[`parser-wrapper-contracts.md`](parser-wrapper-contracts.md). Parser sidecars use
+half-open UTF-8 byte offsets and assert exact recovery behavior rather than only
+the presence of a node.
