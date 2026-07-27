@@ -24,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-      - run: cargo test --workspace --all-targets --all-features
+      - run: cargo test --workspace --all-targets --all-features -- --test-threads=1 --nocapture
 
   quality:
     name: Formatting and Clippy
